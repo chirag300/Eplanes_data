@@ -1,0 +1,24 @@
+# secrets
+.env
+*.env
+!.env.example
+config/db_config.json
+cookies*.json
+# data (not authorised for public release until dataset owners confirm)
+data/
+data_synthetic/
+outputs/
+outputs_synthetic/
+*.zip
+*.pkl
+*.parquet
+# python / tooling
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+chromedriver*
+.DS_Store

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eplanes"
+version = "0.1.0"
+description = "Open field dataset and exploratory analysis pipeline for electric-aircraft battery data"
+requires-python = ">=3.10"
+dependencies = ["pandas>=2.1", "numpy>=1.26", "scipy>=1.11", "matplotlib>=3.8", "pyarrow>=14", "statsmodels>=0.14",
+                "pyyaml>=6", "requests>=2.31", "beautifulsoup4>=4.12", "python-dotenv>=1.0", "tqdm>=4.66", "tabulate>=0.9"]
+
+[project.optional-dependencies]
+browser = ["selenium>=4.15"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+eplanes = "eplanes.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["eplanes*"]

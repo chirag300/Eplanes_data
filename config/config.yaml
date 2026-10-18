@@ -1,0 +1,72 @@
+# Public configuration. NO credentials here (they live in .env).
+portal:
+  base_url: https://cloud.pipistrel.si
+  login_path: /electro/login
+  aircraft_path: /electro/aircraft/{aircraft_id}      # paginated with ?page=N
+  flight_path: /electro/flight/{flight_id}
+
+accounts:
+  fleet_A:
+    user_env: PIPISTREL_FLEET_A_USER
+    password_env: PIPISTREL_FLEET_A_PASSWORD
+    aircraft:
+      - {aircraft_id: 166, label: C-GAUW}
+      - {aircraft_id: 192, label: C-GMUW}
+  fleet_B:
+    user_env: PIPISTREL_FLEET_B_USER
+    password_env: PIPISTREL_FLEET_B_PASSWORD
+    aircraft:
+      - {aircraft_id: 191, label: VSW1280102}
+      - {aircraft_id: 196, label: VSW1280107}
+
+download:
+  delay_s: 0.5            # polite pause between requests
+  max_retries: 3          # 403 / timeout / connection errors only
+  backoff_base_s: 2.0     # 2s, 4s, 8s
+  timeout_s: 60
+  retry_404: false        # 404 = portal has not finished processing the flight
+  login_mode: auto        # auto | requests | selenium
+
+paths:
+  data_dir: data
+  outputs_dir: outputs
+
+units:                     # inferred from magnitudes; the portal does not document them
+  cell_voltage: mV
+  current: A               # negative = charging (validated in earlier project work)
+  soc: percent
+  soh: percent
+  temperature: degC
+  time: minutes
+charge_sign: -1            # sign of current during charging
+n_series_cells: null       # set only after verifying pack topology; enables kW / kWh estimates
+nominal_cell_voltage_v: 3.6
+
+screening_bounds:          # screening limits, NOT physical limits; used only to FLAG values
+  soc: [0, 100]
+  soh: [0, 100]
+  cell_volt_mv: [2500, 4300]
+  temp_c: [-40, 80]
+  abs_current_a: [0, 400]
+
+quality:
+  nominal_dt_min: 0.02
+  gap_factor: 5.0          # a gap is dt > gap_factor * median dt
+  settle_window_min: [1.0, 3.0]   # reference window used to define the "settled" value
+  settle_k_mad: 3.0        # tolerance = k * robust sigma of the settled window
+  max_init_min: 5.0        # search limit for the settling time
+  min_flight_rows: 50
+
+segmentation:
+  active_current_a: 2.0
+  min_segment_min: 1.0
+
+analysis:
+  soc_window: [20, 80]
+  min_window_coverage: 0.6
+  soc_monotone_tol: 1.0
+  near_full_dod: 60
+  partial_dod: 30
+  seasons: {winter: [12, 1, 2], spring: [3, 4, 5], summer: [6, 7, 8], autumn: [9, 10, 11]}
+  bootstrap_reps: 2000
+  random_seed: 20260418
