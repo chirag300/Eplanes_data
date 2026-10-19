@@ -59,11 +59,13 @@ def run_download(settings: Settings, accounts: list[str] | None = None,
     for acct in accounts or list(settings["accounts"]):
         user, pw = credentials(acct, settings)
         log(f"[{acct}] logging in")
-        sess = portal.login(cfg["base_url"], cfg["login_path"], user, pw, dl["login_mode"])
+        first = settings["accounts"][acct]["aircraft"][0]["aircraft_id"]
+        sess = portal.login(cfg["base_url"], cfg["login_path"], user, pw, dl["login_mode"], verify_aircraft_id=first)
         for ac in settings["accounts"][acct]["aircraft"]:
             aid, label = ac["aircraft_id"], ac["label"]
             if not portal.check_logged_in(sess, cfg["base_url"], aid):
-                raise RuntimeError(f"[{acct}] not authorised for aircraft {aid}")
+                log(f"[{acct}] aircraft {aid} ({label}): page lists no flights for this login, skipping")
+                continue
             log(f"[{acct}] listing flights for {label} (aircraft {aid})")
             fids = portal.list_flights(sess, cfg["base_url"], aid, dl["delay_s"], log)
             for k, fid in enumerate(fids, 1):
@@ -129,13 +131,26 @@ def run_discover(settings: Settings, accounts: list[str] | None = None, log=prin
     rows = []
     for acct in accounts or list(settings["accounts"]):
         user, pw = credentials(acct, settings)
-        sess = portal.login(cfg["base_url"], cfg["login_path"], user, pw, settings["download"]["login_mode"])
+        first = settings["accounts"][acct]["aircraft"][0]["aircraft_id"]
+        try:
+            sess = portal.login(cfg["base_url"], cfg["login_path"], user, pw, settings["download"]["login_mode"],
+                                verify_aircraft_id=first)
+        except Exception as e:  # noqa: BLE001
+            log(f"[{acct}] LOGIN FAILED: {e}")
+            rows += [dict(account=acct, aircraft_id=a["aircraft_id"], expected_label=a["label"], http=None,
+                          logged_in=False, label_found_on_page=False, n_flights=0, min_id=None, max_id=None)
+                     for a in settings["accounts"][acct]["aircraft"]]
+            continue
         for ac in settings["accounts"][acct]["aircraft"]:
             r = sess.get(f"{cfg['base_url']}/electro/aircraft/{ac['aircraft_id']}", timeout=30)
+            dbg = settings.data_dir / "raw" / "debug" / f"aircraft_{ac['aircraft_id']}.html"
+            dbg.parent.mkdir(parents=True, exist_ok=True)
+            dbg.write_text(r.text)  # git-ignored; inspect if parsing finds no flights
             fids = portal.list_flights(sess, cfg["base_url"], ac["aircraft_id"], 0.3, log) if r.status_code == 200 else []
             txt = portal.aircraft_page_text(r.text) if r.status_code == 200 else ""
             rows.append(dict(account=acct, aircraft_id=ac["aircraft_id"], expected_label=ac["label"],
-                             http=r.status_code, label_found_on_page=ac["label"] in txt,
+                             http=r.status_code, logged_in=not portal.looks_like_login_page(r.text),
+                             label_found_on_page=ac["label"] in txt,
                              n_flights=len(fids), min_id=min(fids, default=None), max_id=max(fids, default=None)))
     df = pd.DataFrame(rows)
     out = settings.data_dir / "raw" / "aircraft_inventory.csv"

@@ -42,14 +42,22 @@ def login_requests(base_url: str, login_path: str, user: str, pw: str) -> reques
     payload = {}
     if form:
         for inp in form.find_all("input"):
-            if inp.get("name") and inp.get("type") in ("hidden",):
+            if inp.get("name") and inp.get("type") not in ("submit", "button", "password") and inp["name"] != "username":
                 payload[inp["name"]] = inp.get("value", "")
     payload.update({"username": user, "password": pw})
     action = urljoin(url, form.get("action") or url) if form else url
-    r2 = s.post(action, data=payload, timeout=30, allow_redirects=True)
-    if "login" in r2.url.lower() and 'name="password"' in r2.text:
-        raise RuntimeError("requests-based login did not succeed")
+    headers = {"Referer": url, "Origin": base_url}
+    if "csrftoken" in s.cookies:
+        headers["X-CSRFToken"] = s.cookies["csrftoken"]
+    r2 = s.post(action, data=payload, headers=headers, timeout=30, allow_redirects=True)
+    if r2.status_code >= 400 or looks_like_login_page(r2.text):
+        raise RuntimeError(f"requests-based login did not succeed (HTTP {r2.status_code})")
     return s
+
+
+def looks_like_login_page(html: str) -> bool:
+    h = html.lower()
+    return 'name="password"' in h or "name='password'" in h or 'type="password"' in h
 
 
 def login_selenium(base_url: str, login_path: str, user: str, pw: str,
@@ -70,7 +78,11 @@ def login_selenium(base_url: str, login_path: str, user: str, pw: str,
         f = driver.find_element(By.NAME, "password")
         f.send_keys(pw)
         f.send_keys(Keys.RETURN)
-        time.sleep(3)
+        for _ in range(30):  # wait up to ~15 s for the redirect after login
+            time.sleep(0.5)
+            if "login" not in driver.current_url.lower():
+                break
+        time.sleep(1)
         s = requests.Session()
         s.headers["User-Agent"] = "eplanes-dataset-pipeline/1.0 (research)"
         for ck in driver.get_cookies():
@@ -81,19 +93,33 @@ def login_selenium(base_url: str, login_path: str, user: str, pw: str,
 
 
 def check_logged_in(session: requests.Session, base_url: str, aircraft_id: int) -> bool:
+    """True only if the aircraft page is a real flight list (not the login page served with HTTP 200)."""
     r = session.get(f"{base_url}/electro/aircraft/{aircraft_id}", timeout=30)
-    return r.status_code == 200 and 'name="password"' not in r.text
+    if r.status_code != 200 or looks_like_login_page(r.text):
+        return False
+    return bool(parse_flight_ids(r.text)[0])
 
 
-def login(base_url, login_path, user, pw, mode="auto", headless=False):
+def login(base_url, login_path, user, pw, mode="auto", headless=False, verify_aircraft_id=None):
+    """Log in and VERIFY by loading an aircraft page that must list flights.
+    auto = try plain requests first, then a real Chrome login (as in the original notebooks)."""
     if mode in ("auto", "requests"):
         try:
-            return login_requests(base_url, login_path, user, pw)
+            s = login_requests(base_url, login_path, user, pw)
+            if verify_aircraft_id is None or check_logged_in(s, base_url, verify_aircraft_id):
+                print("[login] requests login OK")
+                return s
+            raise RuntimeError("logged-in check failed (aircraft page shows no flights)")
         except Exception as e:  # noqa: BLE001
             if mode == "requests":
                 raise
-            print(f"[login] requests login failed ({e}); falling back to selenium")
-    return login_selenium(base_url, login_path, user, pw, headless=headless)
+            print(f"[login] requests login failed ({e}); falling back to Chrome (selenium)")
+    s = login_selenium(base_url, login_path, user, pw, headless=headless)
+    if verify_aircraft_id is not None and not check_logged_in(s, base_url, verify_aircraft_id):
+        raise RuntimeError("Chrome login completed but the aircraft page still shows no flights: check the credentials "
+                           "in .env, or that this account can see aircraft %s" % verify_aircraft_id)
+    print("[login] Chrome login OK")
+    return s
 
 
 # ── aircraft pages ────────────────────────────────────────────────────────────

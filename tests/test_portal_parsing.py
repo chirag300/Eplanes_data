@@ -33,3 +33,9 @@ def test_parse_date_variants():
     assert parse_date("March 3, 2025, noon") == datetime(2025, 3, 3, 12, 0)
     assert parse_date("June 3, 2023, 9 a.m.") == datetime(2023, 6, 3, 9, 0)
     assert parse_date("garbage") is None
+
+
+def test_login_page_detection():
+    from eplanes.acquisition.portal import looks_like_login_page
+    assert looks_like_login_page('<form><input name="username"><input type="password" name="password"></form>')
+    assert not looks_like_login_page(AIRCRAFT_HTML)

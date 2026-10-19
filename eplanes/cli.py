@@ -31,6 +31,8 @@ def main(argv=None):
     ap.add_argument("--outputs-dir", default=None)
     ap.add_argument("--accounts", nargs="*", default=None, help="subset of accounts, e.g. fleet_A")
     ap.add_argument("--retry-failed", action="store_true")
+    ap.add_argument("--login-mode", choices=["auto", "requests", "selenium"], default=None,
+                    help="override download.login_mode (selenium = real Chrome login, as in the notebooks)")
     ap.add_argument("--limit", type=int, default=None, help="download at most N new flights (testing)")
     ap.add_argument("--external-flights", default=None, help="CSV exported from the local SQL flights table for cross-source checks")
     ap.add_argument("--include-clean-data", action="store_true", help="put analysis-ready data in the ZIP (check redistribution rights first)")
@@ -42,6 +44,8 @@ def main(argv=None):
     s = load_settings(a.config)
     if a.data_dir or a.outputs_dir:
         s = s.with_dirs(Path(a.data_dir or s.data_dir).resolve(), Path(a.outputs_dir or s.outputs_dir).resolve())
+    if a.login_mode:
+        s.raw["download"]["login_mode"] = a.login_mode
     cmd = a.command
 
     if cmd == "selftest":
