@@ -78,4 +78,5 @@ analysis:
   partial_dod: 30
   seasons: {winter: [12, 1, 2], spring: [3, 4, 5], summer: [6, 7, 8], autumn: [9, 10, 11]}
   bootstrap_reps: 2000
+  sensitivity_max_per_aircraft: 150   # null = all sessions (slow: features are re-extracted per scenario)
   random_seed: 20260418

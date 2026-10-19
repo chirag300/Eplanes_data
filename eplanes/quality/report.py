@@ -50,6 +50,10 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
     members = pd.read_csv(settings.data_dir / "raw_combined" / "zip_members.csv")
     coerce = pd.read_csv(settings.data_dir / "raw_combined" / "coercion_log.csv")
     f = flights.merge(qc, on="flight_id", how="left")
+    # sessions without data (download failed / no CSV) have blank QC columns: make the boolean ones explicit
+    for c in [c for c in f.columns if c.startswith(("all_zero__", "constant__"))]:
+        f[c] = f[c].astype("boolean").fillna(True).astype(bool)
+    f["has_timeseries"] = f["n_rows"].fillna(0) > 0
     findings: list[str] = []
     limits: list[str] = []
 
@@ -136,8 +140,14 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
                     f"{int(f.n_row0_zero.sum())}/{len(f)} flights have an all-zero first row.")
     # unit magnitudes (read a light sample per aircraft)
     path = settings.data_dir / "processed" / "analysis_ready_timeseries.parquet"
-    samp = pd.read_parquet(path, columns=["aircraft_label", "bat_1_min_cell_volt", "bat_1_soc",
-                                          "bat_1_max_cell_temp", "bat_1_current"])
+    import pyarrow.parquet as pq
+    pf = pq.ParquetFile(path)
+    cols = [c for c in ["aircraft_label", "bat_1_min_cell_volt", "bat_1_soc", "bat_1_max_cell_temp", "bat_1_current",
+                        "bat_1_voltage"] if c in pf.schema_arrow.names]
+    parts = []
+    for i in range(pf.num_row_groups):  # every 50th sample: memory-safe on tens of millions of rows
+        parts.append(pf.read_row_group(i, columns=cols).to_pandas().iloc[::50])
+    samp = pd.concat(parts, ignore_index=True)
     units = samp.replace(0, np.nan).groupby("aircraft_label").median().reset_index()
     units.to_csv(qdir / "qc_unit_magnitudes.csv", index=False)
     vol_ratio = units.bat_1_min_cell_volt.max() / max(units.bat_1_min_cell_volt.min(), 1e-9)

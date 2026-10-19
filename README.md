@@ -41,6 +41,7 @@ python -m eplanes stats            # outputs/tables/H0_hypothesis_tests.csv
 python -m eplanes sensitivity      # outputs/tables/S1-S3 + figure
 python -m eplanes package          # outputs/eplanes_results_<timestamp>.zip  (+ KEY_FINDINGS.md)
 # or everything after download:   python -m eplanes all
+# resume later steps only:         python -m eplanes all --from quality   (reuses the built datasets)
 ```
 
 Optional: `--external-flights flights.csv` (quality) cross-checks the portal against your local SQL `flights` table;

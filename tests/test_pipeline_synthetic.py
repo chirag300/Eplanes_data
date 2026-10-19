@@ -38,7 +38,7 @@ def test_clean_keeps_every_row_and_raw_values(s):
 
 def test_quality_then_analysis(s):
     g = run_quality(s, log=lambda *a: None)
-    assert (s.outputs_dir / "quality" / GATE).exists() and g["n_flights"] == 40
+    assert (s.outputs_dir / "quality" / GATE).exists() and g["n_flights"] == 44
     o = run_eda(s, log=lambda *a: None)
     assert (s.outputs_dir / "tables" / "G0_observability_table.csv").exists()
     r = run_stats(s, log=lambda *a: None)

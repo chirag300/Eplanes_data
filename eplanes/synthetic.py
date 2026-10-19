@@ -155,5 +155,14 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
                              http_note="synthetic", zip_path=str(zp), meta_path=str(mp),
                              sha256=hashlib.sha256(data).hexdigest(), zip_bytes=len(data), n_members=4,
                              downloaded_utc="synthetic", synthetic_reset=reset))
+    for j, (label, (acct, aid)) in enumerate(aircraft.items()):  # sessions without data, as in the real portal
+        fid += 1
+        mp = raw / "meta" / label / f"flight_{fid}.json"
+        mp.write_text(json.dumps({"flight_id": fid, "account": acct, "aircraft_id": aid, "aircraft_label": label,
+                                  "page_info": {"Date": "June 1, 2025, 10:00 AM", "Flight type": "Flight test"},
+                                  "download_url": None}))
+        rows.append(dict(flight_id=fid, account=acct, aircraft_id=aid, aircraft_label=label,
+                         status=["no_csv", "not_ready", "error", "not_ready"][j % 4], http_note="synthetic", zip_path="",
+                         meta_path=str(mp), sha256="", zip_bytes=0, n_members=0, downloaded_utc="synthetic", synthetic_reset=False))
     pd.DataFrame(rows).to_csv(raw / "manifest.csv", index=False)
     return raw

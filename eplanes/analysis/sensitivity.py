@@ -57,9 +57,17 @@ def headline_metrics(ctx: pd.DataFrame) -> dict:
 def run_sensitivity(settings: Settings, max_flights: int | None = None, log=print) -> pd.DataFrame:
     require_quality_gate(settings)
     ids = None
+    per_ac = settings["analysis"].get("sensitivity_max_per_aircraft")
+    fl = pd.read_csv(settings.data_dir / "processed" / "flights_with_qc.csv")
+    fl = fl[fl.n_rows.fillna(0) > 0]
     if max_flights:
-        fl = pd.read_csv(settings.data_dir / "processed" / "flights_with_qc.csv")
         ids = set(fl.sort_values("flight_id").flight_id.iloc[:max_flights])
+    elif per_ac:
+        # fixed-seed stratified sample per aircraft (each scenario re-extracts all features, so the full set is slow)
+        ids = set(fl.groupby("aircraft_label", group_keys=False)
+                    .apply(lambda g: g.sample(min(len(g), int(per_ac)), random_state=settings["analysis"]["random_seed"])).flight_id)
+        log(f"[sensitivity] using a fixed-seed sample of up to {per_ac} sessions per aircraft ({len(ids)} sessions); "
+            "set analysis.sensitivity_max_per_aircraft: null in config.yaml for all sessions")
     rows = []
     for sc in SCENARIOS:
         log(f"[sensitivity] {sc['name']}")

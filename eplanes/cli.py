@@ -17,9 +17,13 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 from .config import load_settings
+
+warnings.filterwarnings("ignore", message="An input array is constant")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="(invalid value|divide by zero|Mean of empty|All-NaN)")
 
 
 def main(argv=None):
@@ -39,6 +43,9 @@ def main(argv=None):
     ap.add_argument("--include-clean-data", action="store_true", help="put analysis-ready data in the ZIP (check redistribution rights first)")
     ap.add_argument("--include-raw", action="store_true", help="put combined raw data in the ZIP (check redistribution rights first)")
     ap.add_argument("--max-flights", type=int, default=None, help="sensitivity: use only the first N flights")
+    ap.add_argument("--from", dest="from_step", default=None,
+                    choices=["build-raw", "build-clean", "quality", "analyze", "stats", "sensitivity", "package"],
+                    help="with `all`: start at this step (earlier outputs are reused)")
     ap.add_argument("--rule", default="settle", help="cleaning rule for analyses: none|row0|settle|fixed:<min>")
     a = ap.parse_args(argv)
 
@@ -67,6 +74,10 @@ def main(argv=None):
     if cmd in steps:
         steps[cmd]()
     elif cmd == "all":
+        if a.from_step == "package":
+            order = []
+        elif a.from_step:
+            order = order[order.index(a.from_step):]
         for c in order:
             print(f"\n=== {c} ===")
             steps[c]()

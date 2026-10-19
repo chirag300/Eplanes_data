@@ -123,7 +123,8 @@ def settle_info(t: np.ndarray, x: np.ndarray, cfg_q: dict, state: str, signal: s
         seg = np.abs(x[:idx] - ref)
         ok = np.isfinite(seg)
         if ok.sum() >= 4:
-            rho = pd.Series(seg[ok]).corr(pd.Series(np.arange(ok.sum())), method="spearman")
+            sv = seg[ok]
+            rho = pd.Series(sv).corr(pd.Series(np.arange(ok.sum())), method="spearman") if np.ptp(sv) > 0 else 0.0
             cls = "monotone_settling" if rho is not None and rho < -0.5 else "load_onset" if state == "load_start" else "irregular_start"
         else:
             cls = "irregular_start"
