@@ -69,7 +69,7 @@ def _result(rows, hid, family, h0, h1, test, unit, res, extra=None):
     rows.append(r)
 
 
-def run_stats(settings: Settings, rule="settle", log=print) -> pd.DataFrame:
+def run_stats(settings: Settings, rule="leadzero", log=print) -> pd.DataFrame:
     require_quality_gate(settings)
     out_dir = settings.outputs_dir / "tables"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +132,7 @@ def run_stats(settings: Settings, rule="settle", log=print) -> pd.DataFrame:
             _result(rows, f"H4_tempmax_season_{ac}", "H4", f"max cell temperature same across seasons ({ac})", "differs", "Kruskal-Wallis", "session (battery 1)", res[0])
     for ac, g in th[th.flight_type == "flight test"].groupby("aircraft_label"):
         x = g[["i_mean_abs_a", "temp_delta_c"]].dropna()
-        if len(x) >= MIN_N:
+        if len(x) >= MIN_N and x.temp_delta_c.nunique() >= 3 and x.i_mean_abs_a.nunique() >= 3:
             rho, p = stats.spearmanr(x.i_mean_abs_a, x.temp_delta_c)
             lo, hi = boot_ci(np.arange(len(x)), lambda idx: stats.spearmanr(x.i_mean_abs_a.values[idx.astype(int)], x.temp_delta_c.values[idx.astype(int)])[0], 400)
             _result(rows, f"H4_dT_vs_current_{ac}", "H4", f"no monotone association between mean current and temperature rise ({ac})", "association",
@@ -199,7 +199,7 @@ def run_stats(settings: Settings, rule="settle", log=print) -> pd.DataFrame:
         g4["over_ambient"] = g4.temp_max_c - g4.oat_c_median
         for ac, g in list(g4.groupby("aircraft_label")) + [("ALL", g4)]:
             x = g[["i_mean_abs_a", "over_ambient"]].dropna()
-            if len(x) >= MIN_N:
+            if len(x) >= MIN_N and x.over_ambient.nunique() >= 3:
                 rho, p = stats.spearmanr(x.i_mean_abs_a, x.over_ambient)
                 _result(rows, f"H4b_over_ambient_vs_current_{ac}", "H4", f"no monotone association between mean current and cell-over-ambient temperature ({ac})",
                         "association", "Spearman", "flight test (battery 1, OAT logged)",

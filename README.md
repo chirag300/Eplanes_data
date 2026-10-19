@@ -78,7 +78,8 @@ outputs/eplanes_results_*.zip       the archive to upload back for paper writing
 * **Start-up readings.** The first row of a session is typically all-zero and early temperatures can equal (k-1)/k of the settled value (consistent with a resampling bin
   that averaged in a zero). Each flight x signal is classified (`zero_fill`, `bin_avg_zero`, `monotone_settling`, `load_onset`, `stable`) against a *data-driven* settled value
   (linear reference over minutes 1-3, noise-scaled tolerance, only the contiguous start run counts). Sessions that start under load are never flagged as artefacts
-  (a physical transient cannot be excluded). Labels mean "consistent with"; the cause is listed as unresolved. Cleaning rules `none | row0 | settle | fixed:<min>` are compared in the sensitivity analysis.
+  (a physical transient cannot be excluded). Labels mean "consistent with"; the cause is listed as unresolved. Default cleaning rule `leadzero` masks each signal's leading run of exact zeros; `none | row0 | settle | fixed:<min>` are compared in the sensitivity analysis.
+* **Physical plausibility:** sessions whose integrated current per SOC point departs >3x from the fleet median, or whose current / cell voltage exceed physical limits (seen in 19 C-GAUW sessions, Jul-Aug 2023), are excluded from current-, voltage- and energy-based analyses (`quality/plausibility.py`).
 * **Quality gate.** `analyze`, `stats` and `sensitivity` stop unless `outputs/quality/QUALITY_COMPLETE.json` exists.
 * **Observability is tested, including negative results.** CC/CV phases and dQ/dV use strict criteria with a positive and a negative control in the unit tests.
 * **Statistics.** Flight is the unit of analysis (never samples); non-parametric tests; Holm within hypothesis family, BH globally; effect sizes and bootstrap CIs;

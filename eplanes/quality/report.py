@@ -55,6 +55,11 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
         f[c] = f[c].astype("boolean").fillna(True).astype(bool)
     f["has_timeseries"] = f["n_rows"].fillna(0) > 0
     findings: list[str] = []
+    unp = flights[flights.start_datetime.isna()][["flight_id", "aircraft_label", "date_raw"]] if "date_raw" in flights else pd.DataFrame()
+    unp.to_csv(qdir / "qc_unparsed_dates.csv", index=False)
+    if len(unp):
+        findings.append(f"Portal dates: {len(unp)} sessions have a date string that does not parse (listed in qc_unparsed_dates.csv); "
+                        "they are kept but excluded from time-based analyses.")
     limits: list[str] = []
 
     # 0 download completeness ---------------------------------------------------
@@ -110,8 +115,12 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
         findings.append(f"Clocks: {len(g)} sessions carry the avionics time-of-day clock (TIMESTAMP, HHMMSS). Offset of that clock from the "
                         "portal start time (rounded to 0.5 h) by aircraft -> " + "; ".join(f"{k}: {v}" for k, v in vc.items()) +
                         f". Logger vs GPS clock rate differs by median {drift_ppm.median():.0f} ppm (IQR {drift_ppm.quantile(.25):.0f} to "
-                        f"{drift_ppm.quantile(.75):.0f}). A constant offset that switches by 1 h between summer and winter would indicate "
-                        "UTC avionics time and local portal time; see qc_gps_clock_vs_portal.csv.")
+                        f"{drift_ppm.quantile(.75):.0f}). "
+                        + ("The offset does not switch between winter and summer months, so portal start times are on the same clock as "
+                           "the avionics (GPS) time, i.e. most likely UTC rather than local daylight-saving time. "
+                           if g.groupby(g.month.isin([4, 5, 6, 7, 8, 9, 10])).offset_h_rounded.median().nunique() == 1 else
+                           "The offset changes between seasons, consistent with UTC avionics time and local portal time. ")
+                        + "Per-session values: qc_gps_clock_vs_portal.csv.")
         f = f.merge(g[["flight_id", "offset_h_rounded"]], on="flight_id", how="left")
         limits.append("Portal start times are minute-resolution local times of undocumented zone; absolute times are cross-checked against "
                       "the avionics clock only for sessions where the avionics are alive (not charging).")
@@ -250,21 +259,44 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
                         f"{settings.raw.get('n_series_cells')} cells in series.")
     findings.append(f"Invalid-value markers (65535): {int(f.n_sentinel.sum()):,} samples flagged (e.g. motor rpm); not removed.")
 
+    # 7d physical plausibility of current / voltage scaling ---------------------------------
+    from .plausibility import session_plausibility
+    pl, oor_sig = session_plausibility(settings, log=log)
+    pl.to_csv(qdir / "qc_session_plausibility.csv", index=False)
+    fam = oor_sig.drop(columns=["flight_id"]).groupby("aircraft_label").sum().reset_index()
+    fam.to_csv(qdir / "qc_out_of_range_by_signal.csv", index=False)
+    f = f.merge(pl[["flight_id", "scale_anomaly", "b1_ah_per_soc_point", "b2_ah_per_soc_point"]], on="flight_id", how="left")
+    f["scale_anomaly"] = f.scale_anomaly.astype("boolean").fillna(False).astype(bool)
+    an = f[f.scale_anomaly]
+    if len(an):
+        span = an.groupby("aircraft_label").start_datetime.agg(["min", "max", "size"])
+        findings.append("Scale anomaly: " + "; ".join(f"{a}: {int(r['size'])} sessions ({r['min']:%Y-%m-%d} to {r['max']:%Y-%m-%d})"
+                                                   if pd.notna(r['min']) else f"{a}: {int(r['size'])} sessions"
+                                                   for a, r in span.iterrows()) +
+                        f" where charge integrated from current per SOC point traversed departs >3x from the fleet median "
+                        f"({pl.fleet_median_ah_per_soc_point.iloc[0]:.3f} Ah per point, i.e. ~{100 * pl.fleet_median_ah_per_soc_point.iloc[0]:.0f} Ah per 100 points) "
+                        "or current / cell voltage exceed physical limits. Reported SOC/SOH stay normal, so this is a logging/scaling fault; "
+                        "these sessions are excluded from current-, voltage- and energy-based analyses (blocks B, D, G).")
+    tot = fam.drop(columns="aircraft_label").sum()
+    findings.append("Out-of-range samples by signal (all packs, leading zeros excluded): " +
+                    ", ".join(f"{k}={int(v):,}" for k, v in tot.groupby(lambda c: c.split("_", 1)[1]).sum().sort_values(ascending=False).items() if v > 0) + ".")
+
     # 8 usability matrix ------------------------------------------------------------
     minr = cfg["quality"]["min_flight_rows"]
     ok_rows = (f.n_rows >= minr) & (f.is_duplicate_content == False)  # noqa: E712
     def has(sig, b): return (f[f"missing_frac__bat_{b}_{sig}"] < 0.05) & (~f[f"all_zero__bat_{b}_{sig}"].fillna(True))
     U = pd.DataFrame({"flight_id": f.flight_id, "aircraft_label": f.aircraft_label, "flight_type": f.flight_type})
     U["A_overview"] = f.start_datetime.notna() & (f.download_status == "ok")
-    U["B_profiles"] = ok_rows & has("current", 1) & has("current", 2) & (f.frac_discharge > 0.05) & (f.max_gap_min < 1.0)
+    phys = ~f.scale_anomaly
+    U["B_profiles"] = ok_rows & phys & has("current", 1) & has("current", 2) & (f.frac_discharge > 0.05) & (f.max_gap_min < 1.0)
     U["C_soc_dod"] = ok_rows & has("soc", 1) & has("soc", 2)
-    U["D_charging"] = ok_rows & has("current", 1) & (f.frac_charge > 0.2)
+    U["D_charging"] = ok_rows & phys & has("current", 1) & (f.frac_charge > 0.2)
     U["E_thermal"] = ok_rows & has("max_cell_temp", 1) & has("max_cell_temp", 2)
     U["F_soh"] = ok_rows & has("soh", 1) & has("soh", 2)
-    U["G_capacity"] = ok_rows & has("soc", 1) & has("current", 1) & ((f.frac_charge > 0.2) | (f.frac_discharge > 0.2))
+    U["G_capacity"] = ok_rows & phys & has("soc", 1) & has("current", 1) & ((f.frac_charge > 0.2) | (f.frac_discharge > 0.2))
     U["exclusion_reason"] = np.select(
-        [~ok_rows & (f.is_duplicate_content == True), f.n_rows < minr, f.download_status != "ok"],  # noqa: E712
-        ["duplicate_content", "too_few_rows", "download_failed"], "")
+        [~ok_rows & (f.is_duplicate_content == True), f.n_rows < minr, f.download_status != "ok", f.scale_anomaly],  # noqa: E712
+        ["duplicate_content", "too_few_rows", "download_failed", "scale_anomaly (excluded from B, D, G only)"], "")
     U.to_csv(qdir / "usability_matrix_by_flight.csv", index=False)
     blocks = [c for c in U.columns if c[0] in "ABCDEFG" and c[1] == "_"]
     ub = U.groupby("aircraft_label")[blocks].sum().astype(int)

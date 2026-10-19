@@ -76,7 +76,7 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
             oat = 8 + 14 * (1 + np.sin((when.dayofyear - 110) / 365 * 2 * np.pi)) / 2 + rng.normal(0, 1.5)
             dur = {"flight test": rng.uniform(25, 50), "charging": rng.uniform(40, 90), "ground test": rng.uniform(8, 20)}[kind]
             soc = float(rng.uniform(15, 40)) if kind == "charging" else float(rng.uniform(80, 98)) if kind == "flight test" else soc
-            reset = rng.random() < 0.06
+            reset = rng.random() < 0.06 and not (ai == 0 and k in (3, 4))
             for b in (1, 2):
                 cell_soh[b] = np.clip(cell_soh[b] - np.abs(rng.normal(0.3, 0.1, N_CELLS)), 50, 100)
             soh_rep = {b: (100.0 if reset else float(np.round(np.mean(cell_soh[b])))) for b in (1, 2)}
@@ -109,6 +109,11 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
             sec = (when.hour + 4) * 3600 + when.minute * 60 + np.floor(t * 60)  # UTC = local + 4 h (EDT)
             main["TIMESTAMP"] = ((sec // 3600) % 24 * 10000 + (sec % 3600) // 60 * 100 + sec % 60).astype(int) if avion else 0
             df = pd.DataFrame(main)
+            scale_bad = (ai == 0 and k in (3, 4))  # mimic the C-GAUW Jul-Aug 2023 logging/scaling fault
+            if scale_bad:
+                for b_ in (1, 2):
+                    df[f"bat {b_} current"] = df[f"bat {b_} current"] * 12
+                    df[f"bat {b_} max cell volt"] = np.where(rng.random(n) < 0.3, 9000.0, df[f"bat {b_} max cell volt"])
             df.iloc[0, 2:] = 0.0  # all-zero first row (time columns aside)
             if rng.random() < 0.03:
                 df = df.drop(index=range(300, 360)).reset_index(drop=True)
@@ -125,7 +130,7 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
                       f"bat {b} cell est bat cap": 9611 if reset else int(np.mean(cell_soh[b]) * 96),
                       f"bat {b} cell flg rst coulomb": 1 if reset else int(rng.random() < 0.05)}
                 for c in range(N_CELLS):
-                    sb[f"B{b} SOH CELL {c}"] = 100.0 if reset else round(float(cell_soh[b][c]), 2)
+                    sb[f"B{b} SOH CELL {c}"] = 100.0 if reset else (350.0 + c if (scale_bad and b == 2) else round(float(cell_soh[b][c]), 2))
                 for c in range(N_CELLS):
                     sb[f"B{b} BATT CAP {c}"] = 96.11 if reset else round(float(cell_soh[b][c]) * 0.97, 2)
                 sdf = pd.DataFrame(sb)
@@ -154,7 +159,7 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
             rows.append(dict(flight_id=fid, account=acct, aircraft_id=aid, aircraft_label=label, status="ok",
                              http_note="synthetic", zip_path=str(zp), meta_path=str(mp),
                              sha256=hashlib.sha256(data).hexdigest(), zip_bytes=len(data), n_members=4,
-                             downloaded_utc="synthetic", synthetic_reset=reset))
+                             downloaded_utc="synthetic", synthetic_reset=reset, synthetic_scale_anomaly=scale_bad))
     for j, (label, (acct, aid)) in enumerate(aircraft.items()):  # sessions without data, as in the real portal
         fid += 1
         mp = raw / "meta" / label / f"flight_{fid}.json"
@@ -163,6 +168,6 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
                                   "download_url": None}))
         rows.append(dict(flight_id=fid, account=acct, aircraft_id=aid, aircraft_label=label,
                          status=["no_csv", "not_ready", "error", "not_ready"][j % 4], http_note="synthetic", zip_path="",
-                         meta_path=str(mp), sha256="", zip_bytes=0, n_members=0, downloaded_utc="synthetic", synthetic_reset=False))
+                         meta_path=str(mp), sha256="", zip_bytes=0, n_members=0, downloaded_utc="synthetic", synthetic_reset=False, synthetic_scale_anomaly=False))
     pd.DataFrame(rows).to_csv(raw / "manifest.csv", index=False)
     return raw

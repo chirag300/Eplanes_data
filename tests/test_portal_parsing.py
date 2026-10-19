@@ -39,3 +39,7 @@ def test_login_page_detection():
     from eplanes.acquisition.portal import looks_like_login_page
     assert looks_like_login_page('<form><input name="username"><input type="password" name="password"></form>')
     assert not looks_like_login_page(AIRCRAFT_HTML)
+
+
+def test_parse_date_ap_style_september():
+    assert parse_date("Sept. 5, 2024, 3:05 p.m.") == datetime(2024, 9, 5, 15, 5)

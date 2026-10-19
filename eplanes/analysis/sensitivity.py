@@ -1,7 +1,7 @@
 """Sensitivity of headline results to cleaning, session-segmentation and timestamp-alignment choices.
 
-One-at-a-time design around the baseline (rule=settle, active current 2 A, logged timestamps):
-  cleaning rule      : none | row0 | settle | fixed:0.5 | fixed:1.0 | fixed:3.0
+One-at-a-time design around the baseline (rule=leadzero, active current 2 A, logged timestamps):
+  cleaning rule      : none | row0 | leadzero | settle | fixed:0.5 | fixed:1.0 | fixed:3.0
   segmentation       : active-current threshold 1 | 2 | 5 A
   timestamp alignment: logged | uniform (index x median dt) | gapbridge (integrate across gaps)
 For each scenario the headline metrics are recomputed and compared to the baseline.
@@ -20,10 +20,11 @@ from ..viz.style import BLUE, FigureSink
 from .context import attach_meta
 from .features import extract_all
 
-BASE = dict(rule="settle", seg=2.0, time_rule="logged")
-SCENARIOS = ([dict(name=f"rule={r}", rule=r, seg=2.0, time_rule="logged") for r in ["none", "row0", "settle", "fixed:0.5", "fixed:1.0", "fixed:3.0"]] +
-             [dict(name=f"seg={x:g}A", rule="settle", seg=x, time_rule="logged") for x in (1.0, 5.0)] +
-             [dict(name=f"time={t}", rule="settle", seg=2.0, time_rule=t) for t in ("uniform", "gapbridge")])
+BASE = dict(rule="leadzero", seg=2.0, time_rule="logged")
+BASELINE = "rule=leadzero"
+SCENARIOS = ([dict(name=f"rule={r}", rule=r, seg=2.0, time_rule="logged") for r in ["none", "row0", "leadzero", "settle", "fixed:0.5", "fixed:1.0", "fixed:3.0"]] +
+             [dict(name=f"seg={x:g}A", rule="leadzero", seg=x, time_rule="logged") for x in (1.0, 5.0)] +
+             [dict(name=f"time={t}", rule="leadzero", seg=2.0, time_rule=t) for t in ("uniform", "gapbridge")])
 
 
 def headline_metrics(ctx: pd.DataFrame) -> dict:
@@ -77,7 +78,7 @@ def run_sensitivity(settings: Settings, max_flights: int | None = None, log=prin
         for k, v in headline_metrics(ctx).items():
             rows.append(dict(scenario=sc["name"], metric=k, value=v))
     long = pd.DataFrame(rows)
-    base = long[long.scenario == "rule=settle"].set_index("metric").value
+    base = long[long.scenario == BASELINE].set_index("metric").value
     long["baseline"] = long.metric.map(base)
     isp = long.metric.str.contains("_p")
     long["rel_dev_pct"] = np.where(isp, np.nan, 100 * (long.value - long.baseline) / long.baseline.abs().replace(0, np.nan))
@@ -118,6 +119,6 @@ def run_sensitivity(settings: Settings, max_flights: int | None = None, log=prin
         ax.grid(False)
         fig.colorbar(im, ax=ax, label="deviation from baseline [%]")
         FigureSink(settings.outputs_dir / "figures").save(fig, "S1_sensitivity_heatmap",
-            "Relative deviation (%) of headline estimates from the baseline (rule=settle, 2 A activity threshold, logged timestamps) under alternative "
+            "Relative deviation (%) of headline estimates from the baseline (rule=leadzero, 2 A activity threshold, logged timestamps) under alternative "
             "cleaning, segmentation and timestamp-alignment rules. Diverging scale centred at zero (grey = no change). p-values are listed in table S2.")
     return long

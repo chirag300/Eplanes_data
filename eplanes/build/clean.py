@@ -283,5 +283,5 @@ Rows: {n_rows:,} (identical to the combined raw dataset; NO rows deleted, NO raw
 6. Screening bounds used for `out_of_range` are in config/config.yaml (`screening_bounds`) and are screening limits only.
 
 Analyses choose which flags to honour through an explicit *cleaning rule*
-(none | row0 | settle | fixed:<minutes>); see eplanes/analysis/features.py and the sensitivity analysis.
+(leadzero [default] | none | row0 | settle | fixed:<minutes>); see eplanes/analysis/features.py and the sensitivity analysis.
 """

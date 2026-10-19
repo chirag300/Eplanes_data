@@ -3,7 +3,7 @@
 Cleaning rules (what is excluded from statistics; raw rows are never deleted):
   none        use every row as logged
   row0        mask the all-zero first row only
-  settle      mask each signal group until its data-driven settle index (+ row 0)   [default]
+  settle      mask each signal group until its data-driven settle index (+ row 0)
   fixed:<m>   mask every signal for the first <m> minutes
 Segmentation / timestamp variants are handled by `seg_current_a` and `time_rule`
 arguments so the sensitivity analysis can reuse the same code.
@@ -18,7 +18,7 @@ import pandas as pd
 from ..build.clean import FLAG_BITS, SIGNALS, iter_flights
 from ..quality.init_artifacts import GROUP_BITS, group_of
 
-DEFAULT_RULE = "settle"
+DEFAULT_RULE = "leadzero"
 warnings.filterwarnings("ignore", message="All-NaN slice")
 warnings.filterwarnings("ignore", message="Mean of empty slice")
 
@@ -29,6 +29,17 @@ def apply_rule(d: pd.DataFrame, rule: str) -> pd.DataFrame:
     if rule == "none":
         return d
     t = d["time_min"].to_numpy(float)
+    if rule == "leadzero":
+        # mask, per signal, the run of exact zeros that opens the record before the channel first reports a value
+        # (real data: temperatures stay 0 for several samples after row 0, so masking row 0 alone is not enough;
+        #  the data-driven 'settle' window instead masks real charge/discharge onsets)
+        for c in SIGNALS:
+            if c in d:
+                x = d[c].to_numpy(float)
+                nz = np.flatnonzero(np.isfinite(x) & (x != 0))
+                if len(nz) and nz[0] > 0:
+                    d.loc[d.index[: nz[0]], c] = np.nan
+        return d
     if rule == "row0":
         for c in SIGNALS:
             if c in d:
@@ -239,6 +250,22 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
         c2 = dict(cfg)
         c2["segmentation"] = dict(cfg["segmentation"], active_current_a=seg_current_a)
         _, st = segment_activity(d["time_min"].to_numpy(float), cur_all, c2)
+    # drivetrain cross-check: sum of both packs' V x I against the logged motor power
+    ptot = np.zeros(len(x))
+    okp = np.ones(len(x), bool)
+    for bb in (1, 2):
+        vb = x[f"bat_{bb}_voltage"].to_numpy(float) if f"bat_{bb}_voltage" in x else np.full(len(x), np.nan)
+        ib = x[f"bat_{bb}_current"].to_numpy(float)
+        pb = -cs * ib * np.where(vb > 50, vb, np.nan) / 1000.0
+        ptot = ptot + np.nan_to_num(pb)
+        okp &= np.isfinite(pb)
+    ptot = np.where(okp, ptot, np.nan)
+    flight_level = dict(pack_total_power_peak_kw=float(np.nanmax(ptot)) if np.isfinite(ptot).any() else np.nan)
+    if "motor_power" in x:
+        mp = pd.to_numeric(x["motor_power"], errors="coerce").to_numpy(float)
+        flight_level["motor_power_peak_kw"] = float(np.nanmax(mp)) if np.isfinite(mp).any() else np.nan
+        m = np.isfinite(mp) & np.isfinite(ptot) & (ptot > 5) & (mp > 0)
+        flight_level["motor_over_pack_power_median"] = float(np.median(mp[m] / ptot[m])) if m.sum() > 50 else np.nan
     out = []
     for b in (1, 2):
         cur = x[f"bat_{b}_current"].to_numpy(float)
@@ -249,7 +276,7 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
         tmax = x[f"bat_{b}_max_cell_temp"].to_numpy(float)
         tavg = x[f"bat_{b}_avg_cell_temp"].to_numpy(float) if f"bat_{b}_avg_cell_temp" in x else np.full(len(x), np.nan)
         dis = -cs * cur  # positive when discharging
-        r = dict(flight_id=int(d["flight_id"].iloc[0]), battery=b, rule=rule,
+        r = dict(flight_id=int(d["flight_id"].iloc[0]), battery=b, rule=rule, **flight_level,
                  duration_min=float(np.nanmax(t) - np.nanmin(t)) if ok_t.any() else np.nan, n_rows=len(x))
         fin = np.isfinite(soc)
         r["soc_start"] = float(soc[fin][0]) if fin.any() else np.nan

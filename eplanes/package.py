@@ -114,7 +114,7 @@ def build_zip(settings: Settings, include_clean_data: bool = False, include_raw:
     files += [(p, f"docs/{p.name}") for p in (stage / "docs").glob("*")]
     proc = settings.data_dir / "processed"
     if include_clean_data:
-        for n in ("flights_with_qc.csv", "flight_qc.csv", "init_records.csv", "features_battery_session__settle.csv"):
+        for n in ("flights_with_qc.csv", "flight_qc.csv", "init_records.csv", "features_battery_session__leadzero.csv"):
             if (proc / n).exists():
                 files.append((proc / n, f"data/{n}"))
         ts = proc / "analysis_ready_timeseries.parquet"

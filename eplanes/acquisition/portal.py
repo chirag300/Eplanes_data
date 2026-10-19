@@ -178,6 +178,7 @@ def parse_date(s: str) -> datetime | None:
             t = re.sub(word, hm, t, flags=re.I)
             break
     t = t.replace(".", "").strip()
+    t = re.sub(r"\bSept\b", "Sep", t)  # AP-style month abbreviation used by the portal
     for fmt in ("%B %d, %Y, %I:%M %p", "%B %d, %Y, %I %p", "%b %d, %Y, %I:%M %p",
                 "%b %d, %Y, %I %p", "%B %d, %Y", "%b %d, %Y"):
         try:

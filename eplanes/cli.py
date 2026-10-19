@@ -46,7 +46,7 @@ def main(argv=None):
     ap.add_argument("--from", dest="from_step", default=None,
                     choices=["build-raw", "build-clean", "quality", "analyze", "stats", "sensitivity", "package"],
                     help="with `all`: start at this step (earlier outputs are reused)")
-    ap.add_argument("--rule", default="settle", help="cleaning rule for analyses: none|row0|settle|fixed:<min>")
+    ap.add_argument("--rule", default="leadzero", help="cleaning rule for analyses: leadzero|none|row0|settle|fixed:<min>")
     a = ap.parse_args(argv)
 
     s = load_settings(a.config)

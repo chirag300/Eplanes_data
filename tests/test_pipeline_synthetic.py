@@ -60,3 +60,23 @@ def test_bms_reset_detection_matches_planted(s):
     x = b.merge(m, on="flight_id")
     assert (x.uniform_cells.astype(bool) == x.synthetic_reset.astype(bool)).all()
     assert x.first_zero_temp.all() and not x.first_zero_voltage.any()
+
+
+def test_scale_anomaly_detected(s):
+    import pandas as pd
+    from eplanes.quality.plausibility import session_plausibility
+    p, oor = session_plausibility(s, log=lambda *a: None)
+    m = pd.read_csv(s.data_dir / "raw" / "manifest.csv")[["flight_id", "synthetic_scale_anomaly"]]
+    x = p.merge(m, on="flight_id")
+    assert (x.scale_anomaly == x.synthetic_scale_anomaly.astype(bool)).all()
+
+
+def test_leadzero_rule_masks_only_leading_zeros():
+    import numpy as np
+    import pandas as pd
+    from eplanes.analysis.features import apply_rule
+    d = pd.DataFrame({"time_min": np.arange(6) * 0.1, "bat_1_max_cell_temp": [0, 0, 0, 21, 0, 22.0],
+                      "bat_1_current": [0, 0, -5, -20, -20, 0.0], "quality_flag": 0, "init_unsettled_groups": 0})
+    x = apply_rule(d, "leadzero")
+    assert x.bat_1_max_cell_temp.isna().tolist() == [True, True, True, False, False, False]
+    assert x.bat_1_current.isna().sum() == 2 and x.bat_1_current.iloc[-1] == 0

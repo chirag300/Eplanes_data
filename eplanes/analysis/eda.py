@@ -135,6 +135,8 @@ def phase_proxy(t, cur_dis, med_dt):
         return out
     a, b = active[0], active[-1]
     hi = sm > 0.75 * p95
+    first_hi = int(np.argmax(hi)) if hi.any() else a  # taxi precedes take-off: start at the first high-power sample
+    a = max(a, first_hi)
     k = a
     while k < b and hi[k]:
         k += 1
@@ -213,7 +215,7 @@ def section_B(settings, ctx, out: Out):
         if len(g):
             ex_ids.append(int(g.iloc[len(g) // 2].flight_id))
     for fid in ids.flight_id.tolist():
-        d = apply_rule(read_flight(settings, fid).sort_values("time_min"), "settle")
+        d = apply_rule(read_flight(settings, fid).sort_values("time_min"), "leadzero")
         t = d.time_min.to_numpy()
         dt = np.diff(t)
         med = float(np.median(dt[dt > 0])) if (dt > 0).any() else 0.02
@@ -350,7 +352,7 @@ def section_D(settings, ctx, out: Out):
         ids = ch[(ch.aircraft_label == ac) & (ch.battery == 1)].flight_id.tolist()
         ids = list(rng.choice(ids, min(8, len(ids)), replace=False)) if ids else []
         for fid in ids:
-            d = apply_rule(read_flight(settings, int(fid)).sort_values("time_min"), "settle")
+            d = apply_rule(read_flight(settings, int(fid)).sort_values("time_min"), "leadzero")
             m = d.segment_type == "charge"
             if m.sum() < 50:
                 continue
@@ -618,10 +620,11 @@ def section_G(settings, ctx, out: Out):
         g = g[(g.delta_soc.abs() >= 10) & (g.ah_net_discharge.abs() > 0.5)]
         if len(g) >= 8:
             sl = stats.linregress(-g.ah_net_discharge, g.delta_soc)  # soc gain per Ah charged
-            cap = 100.0 / sl.slope if sl.slope > 0 else np.nan
+            ts = stats.theilslopes(g.delta_soc, -g.ah_net_discharge)  # robust to residual outlier sessions
+            cap = 100.0 / ts.slope if ts.slope > 0 else np.nan
             q = (-g.ah_net_discharge / (g.delta_soc / 100.0)).replace([np.inf, -np.inf], np.nan)
             q = q[(q > 0)]
-            cc_rows.append(dict(aircraft=ac, battery=b, n=len(g), slope_soc_per_ah=sl.slope, r2=sl.rvalue ** 2,
+            cc_rows.append(dict(aircraft=ac, battery=b, n=len(g), slope_soc_per_ah=sl.slope, theil_sen_slope=ts.slope, r2=sl.rvalue ** 2,
                                 implied_capacity_ah_from_slope=cap, per_session_implied_median=q.median(),
                                 per_session_cv=q.std() / q.mean() if q.mean() else np.nan))
     cc = out.table(pd.DataFrame(cc_rows), "G1_soc_vs_integrated_current")
@@ -635,7 +638,31 @@ def section_G(settings, ctx, out: Out):
                              median_ah=ok.implied_capacity_ah.median(), iqr_ah=ok.implied_capacity_ah.quantile(.75) - ok.implied_capacity_ah.quantile(.25),
                              cv=ok.implied_capacity_ah.std() / ok.implied_capacity_ah.mean() if len(ok) > 2 else np.nan, spearman_vs_date=tau,
                              window=str(cfg["analysis"]["soc_window"])))
+    # fade trend (Theil-Sen, Ah per year) and dependence on the BMS's own capacity estimate
+    bp = settings.data_dir / "processed" / "bms_session.csv"
+    bms = pd.read_csv(bp, usecols=lambda c: c in ("flight_id", "battery", "batt_cap_cells_last_mean", "batt_cap_cells_last_max",
+                                                    "soh_cell_cells_last_max")) if bp.exists() else pd.DataFrame()
+    for r in cap_rows:
+        ok = cap[(cap.aircraft_label == r["aircraft"]) & (cap.battery == r["battery"])].dropna(subset=["start_datetime", "implied_capacity_ah"])
+        if len(ok) >= 8:
+            yrs = _days(ok.start_datetime) / 365.25
+            ts = stats.theilslopes(ok.implied_capacity_ah.to_numpy(float), yrs)
+            first = ok.sort_values("start_datetime").implied_capacity_ah.iloc[: max(5, len(ok) // 10)].median()
+            r.update(fade_ah_per_year=ts.slope, fade_ci_low=ts.low_slope, fade_ci_high=ts.high_slope,
+                     fade_pct_per_year=100 * ts.slope / first, span_years=float(np.nanmax(yrs) - np.nanmin(yrs)))
+        if len(bms) and len(ok) >= 8 and "batt_cap_cells_last_mean" in bms:
+            m = ok.merge(bms, on=["flight_id", "battery"], how="inner")
+            m = m[(m.soh_cell_cells_last_max <= 100.5) & (m.batt_cap_cells_last_max < 150)]
+            if len(m) >= 8:
+                r["spearman_vs_bms_mean_cell_capacity"] = stats.spearmanr(m.implied_capacity_ah, m.batt_cap_cells_last_mean)[0]
     cp = out.table(pd.DataFrame(cap_rows), "G2_window_capacity")
+    if "spearman_vs_bms_mean_cell_capacity" in cp:
+        out.note(f"G: matched-window capacity (current integrated over a BMS-SOC window) correlates with the BMS's own per-cell capacity "
+                 f"estimate at Spearman rho = {cp.spearman_vs_bms_mean_cell_capacity.median():.2f} (median over packs). Because the window "
+                 "is defined by BMS SOC, this capacity is NOT independent of the BMS estimator; treat its trend as a cross-check, not ground truth.")
+    if "fade_pct_per_year" in cp:
+        out.note("G: matched-window capacity trend (Theil-Sen): " + "; ".join(
+            f"{r.aircraft} b{r.battery}: {r.fade_pct_per_year:+.1f} %/yr" for r in cp.dropna(subset=["fade_pct_per_year"]).itertuples()))
     reasons = usable.capacity_reason.str.replace(r"\d+pct", "NNpct", regex=True).value_counts().rename_axis("reason").reset_index(name="count")
     out.table(reasons, "G2b_capacity_rejection_reasons")
     # 4 R0 proxy
@@ -780,6 +807,16 @@ def bms_context(settings, ctx):
     b = b.sort_values(["aircraft_label", "battery", "start_datetime", "flight_id"])
     if "soh_median" in b:
         b["d_soh"] = b.groupby(["aircraft_label", "battery"]).soh_median.diff()
+    # implausible internal values (e.g. per-cell SOH 330-460 % in the C-GAUW Jul-Aug 2023 scale-anomaly sessions)
+    b["bms_anomaly"] = ((b.get("soh_cell_cells_last_max", pd.Series(0, index=b.index)) > 100.5) |
+                        (b.get("batt_cap_cells_last_max", pd.Series(0, index=b.index)) > 150)).fillna(False)
+    b = b[~b.bms_anomaly].copy()
+    if "soh_median" in b:
+        b["d_soh"] = b.groupby(["aircraft_label", "battery"]).soh_median.diff()
+    for c in ("soh_cell_cells_last_min", "soh_cell_cells_last_mean", "soh_cell_cells_last_max"):
+        if c in b:
+            b["d_" + c.split("_")[-1]] = b.groupby(["aircraft_label", "battery"])[c].diff()
+    b["new_est"] = (b.cell_flg_new_est_batt_cap_rises.fillna(0) > 0) if "cell_flg_new_est_batt_cap_rises" in b else False
     if "uniform_cells" in b:
         b["uniform_cells"] = b.uniform_cells.fillna(False).astype(bool)
         b["prev_uniform"] = b.groupby(["aircraft_label", "battery"]).uniform_cells.shift(1).fillna(False).astype(bool)
@@ -793,6 +830,59 @@ def section_F_bms(settings, ctx, out: Out):
         out.note("F (BMS internals): no BMS files available; section skipped.")
         return
     b.to_csv(settings.outputs_dir / "tables" / "F5_bms_session_internals.csv", index=False)
+    raw_n = len(pd.read_csv(settings.data_dir / "processed" / "bms_session.csv", usecols=["flight_id"]))
+    # how the reported pack SOH relates to the 96 per-cell SOH values
+    v = b[~b.uniform_cells & b.soh_median.notna()]
+    if "soh_cell_cells_last_min" in v:
+        v = v[v.soh_cell_cells_last_min.notna()]
+    rel = []
+    for ac, g in list(v.groupby("aircraft_label")) + [("ALL", v)]:
+        for c, lab in (("soh_cell_cells_last_min", "min over cells"), ("soh_cell_cells_last_mean", "mean over cells"),
+                       ("soh_cell_cells_last_max", "max over cells")):
+            if c in g and len(g) > 5:
+                dlt = g.soh_median - g[c]
+                rel.append(dict(aircraft=ac, comparator=lab, n=len(g), spearman=g.soh_median.corr(g[c], method="spearman"),
+                                median_reported_minus=dlt.median(), frac_within_1pt=(dlt.abs() < 1).mean()))
+    rel = out.table(pd.DataFrame(rel), "F8_reported_soh_vs_percell")
+    if len(rel):
+        a = rel[(rel.aircraft == "ALL") & (rel.comparator == "min over cells")]
+        if len(a):
+            out.note(f"F (BMS internals): reported pack SOH tracks the MINIMUM of the 96 per-cell SOH values (Spearman "
+                     f"{a.spearman.iloc[0]:.3f}; within 1 point in {a.frac_within_1pt.iloc[0]:.0%} of sessions; median offset "
+                     f"{a.median_reported_minus.iloc[0]:+.2f}), i.e. the pack figure is the weakest-cell estimate, not an average.")
+    if {"d_soh", "d_min", "d_mean", "d_max"} <= set(b.columns):
+        ev = b.dropna(subset=["d_soh"]).copy()
+        ev["step"] = np.select([ev.d_soh >= 2, ev.d_soh <= -2], ["increase >= 2", "decrease <= -2"], "within +/-2")
+        dec = ev.groupby("step").agg(n=("d_soh", "size"), median_d_min_cell=("d_min", "median"), median_d_mean_cell=("d_mean", "median"),
+                                     median_d_max_cell=("d_max", "median"), frac_with_new_capacity_estimate=("new_est", "mean"),
+                                     frac_charging_sessions=("flight_type", lambda x: (x == "charging").mean())).reset_index()
+        out.table(dec, "F9_soh_step_decomposition")
+        if "soh_cell_changed_in_session" in b:
+            upd = b.groupby("flight_type").agg(sessions=("flight_id", "size"),
+                                               frac_percell_soh_updated=("soh_cell_changed_in_session", "mean")).reset_index()
+            out.table(upd, "F10_percell_soh_updates_by_session_type")
+        big = dec[dec.step != "within +/-2"]
+        weakest = bool(len(big) and (big.median_d_min_cell.abs() > big.median_d_max_cell.abs()).all())
+        upd_share = float(b[b.soh_cell_changed_in_session.fillna(False).astype(bool)].flight_type.eq("charging").mean()) \
+            if "soh_cell_changed_in_session" in b and b.soh_cell_changed_in_session.fillna(False).astype(bool).any() else float("nan")
+        out.note(f"F (BMS internals): {raw_n - len(b)} battery-sessions with implausible internal values were excluded. "
+                 + ("Large session-to-session reported-SOH steps move the minimum per-cell SOH more than the maximum (F9). "
+                    if weakest else "Large reported-SOH steps are not dominated by the minimum per-cell SOH (F9). ")
+                 + f"Of the sessions in which per-cell SOH values change within the session, {upd_share:.0%} are charging sessions (F10).")
+    if len(v) and "soh_cell_cells_last_mean" in v:
+        fig, axes = plt.subplots(1, 2, figsize=(9, 4), sharey=True)
+        for ax, c, lab in zip(axes, ["soh_cell_cells_last_min", "soh_cell_cells_last_mean"], ["minimum per-cell SOH [%]", "mean per-cell SOH [%]"]):
+            for i, ac in enumerate(_ac_order(v)):
+                g = v[v.aircraft_label == ac]
+                col, mk = aircraft_color(ac, i)
+                ax.scatter(g[c], g.soh_median, s=8, color=col, marker=mk, alpha=0.5, label=ac, linewidths=0)
+            lo = float(np.nanmin(v[[c, "soh_median"]].values))
+            ax.plot([lo, 100], [lo, 100], ":", color=INK2, lw=0.8)
+            ax.set_xlabel(lab)
+        axes[0].set_ylabel("reported pack SOH [%]")
+        axes[0].legend(fontsize=7)
+        out.figs.save(fig, "F8_reported_vs_min_and_mean_cell_soh", "Reported pack SOH against the minimum (left) and the mean (right) of the "
+                      "BMS's 96 per-cell SOH values, one point per battery-session (uniform-cell and implausible sessions excluded; dotted line: equality).")
     rows = []
     for (ac, bat), g in b.groupby(["aircraft_label", "battery"]):
         rows.append(dict(aircraft=ac, battery=bat, sessions=len(g), uniform_cell_sessions=int(g.uniform_cells.sum()),
@@ -858,7 +948,7 @@ def section_F_bms(settings, ctx, out: Out):
                       "excluding uniform-cell sessions.")
 
 
-def run_eda(settings: Settings, rule="settle", log=print):
+def run_eda(settings: Settings, rule="leadzero", log=print):
     require_quality_gate(settings)
     ctx = load_context(settings, rule, recompute=True)
     out = Out(settings)
