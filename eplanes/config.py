@@ -73,20 +73,43 @@ def load_settings(path: str | Path | None = None) -> Settings:
     return Settings(raw, ROOT)
 
 
+ENV_FILE = ROOT / ".env"
+
+
+def read_env_file(path: Path = ENV_FILE) -> dict[str, str]:
+    """Minimal .env parser (no python-dotenv needed). Accepts KEY=value, `export KEY=value`,
+    optional quotes, spaces around '=', comments, a UTF-8 BOM and Windows line endings."""
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+            v = v[1:-1]
+        out[k] = v
+    return out
+
+
 def credentials(account: str, settings: Settings) -> tuple[str, str]:
-    """Read credentials from the environment / .env. Never from code."""
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env")
-    except ImportError:  # pragma: no cover
-        pass
+    """Read credentials from the process environment or ROOT/.env. Never from code."""
     acct = settings["accounts"][account]
-    user = os.environ.get(acct["user_env"], "")
-    pw = os.environ.get(acct["password_env"], "")
+    env = read_env_file()
+    user = os.environ.get(acct["user_env"]) or env.get(acct["user_env"], "")
+    pw = os.environ.get(acct["password_env"]) or env.get(acct["password_env"], "")
     if not user or not pw:
+        if not ENV_FILE.exists():
+            nearby = sorted(p.name for p in ROOT.iterdir() if "env" in p.name.lower())
+            where = f"{ENV_FILE} does not exist (files with 'env' in the name here: {nearby or 'none'})"
+        else:
+            where = f"{ENV_FILE} exists and defines keys: {sorted(env) or 'none'}"  # names only, never values
         raise RuntimeError(
-            f"Missing credentials for {account}: set {acct['user_env']} and "
-            f"{acct['password_env']} in .env (see .env.example, or run "
-            f"`python scripts/extract_credentials.py <notebook.ipynb> ...`)."
+            f"Missing credentials for {account}: need non-empty {acct['user_env']} and {acct['password_env']}. "
+            f"{where}. See .env.example."
         )
     return user, pw
