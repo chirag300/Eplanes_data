@@ -81,16 +81,18 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
     f["is_duplicate_content"] = f.duplicated("content_hash", keep="first") & f["content_hash"].notna()
 
     # 2 timestamps / sampling ------------------------------------------------------
+    gap_min = cfg["quality"].get("gap_min_s", 2.0) / 60.0
+    f["has_gap"] = f.max_gap_min.fillna(0) > gap_min  # recomputed from the largest step, independent of the build-time flag
     ts = f.groupby("aircraft_label").agg(
         flights=("flight_id", "size"), median_dt_min=("median_dt_min", "median"),
-        flights_with_gaps=("n_gaps", lambda s: int((s > 0).sum())), total_gaps=("n_gaps", "sum"),
+        flights_with_gaps=("has_gap", "sum"), total_gap_flags=("n_gaps", "sum"),
         max_gap_min=("max_gap_min", "max"), nonmono_samples=("n_nonmonotonic", "sum"),
         duplicate_time_samples=("n_duplicate_time", "sum"),
         missing_start_datetime=("start_datetime", lambda s: int(s.isna().sum()))).reset_index()
     ts.to_csv(qdir / "qc_timestamps.csv", index=False)
     nd = f["median_dt_min"].round(4).value_counts()
     findings.append(f"Sampling: median dt by flight = {', '.join(f'{k} min ({v} flights)' for k, v in nd.head(3).items())}; "
-                    f"{int((f.n_gaps > 0).sum())} flights contain logging gaps > {cfg['quality']['gap_factor']}x median dt; "
+                    f"{int(f.has_gap.sum())} flights contain at least one logging gap longer than {cfg['quality'].get('gap_min_s', 2.0):g} s; "
                     f"{int(f.n_nonmonotonic.sum())} non-monotonic and {int(f.n_duplicate_time.sum())} duplicate time samples.")
     ordered = f.dropna(subset=["start_datetime"]).sort_values(["aircraft_label", "start_datetime"])
     # GPS time-of-day clock vs portal start time -> time-zone offset and clock agreement

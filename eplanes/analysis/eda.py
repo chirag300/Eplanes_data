@@ -19,6 +19,11 @@ from ..viz.style import (AIRCRAFT_STYLE, AQUA, BATTERY_STYLE, BLUE, GRID, INK2, 
 from .context import boot_ci, load_context
 from .features import apply_rule, read_flight
 
+def _days(s: pd.Series) -> np.ndarray:
+    """Days since 1970 as float; NaT -> NaN (some portal dates do not parse)."""
+    return ((pd.to_datetime(s) - pd.Timestamp("1970-01-01")).dt.total_seconds() / 86400.0).to_numpy(float)
+
+
 TYPE_COLOR = {"flight test": BLUE, "charging": AQUA, "ground test": ORANGE}
 
 
@@ -512,7 +517,7 @@ def section_F(settings, ctx, out: Out):
         for k in range(1, len(s)):
             run = run + 1 if s[k] == s[k - 1] else 1
             best = max(best, run)
-        tau, p = stats.kendalltau(g.start_datetime.map(pd.Timestamp.toordinal), s) if len(s) > 5 else (np.nan, np.nan)
+        tau, p = stats.kendalltau(_days(g.start_datetime), s, nan_policy="omit") if len(s) > 5 else (np.nan, np.nan)
         rows.append(dict(aircraft=ac, battery=b, n_sessions=len(s), first_soh=s[0], last_soh=s[-1], total_change=s[-1] - s[0],
                          min_soh=s.min(), max_soh=s.max(), n_increases=int((ds > 0).sum()), n_decreases=int((ds < 0).sum()),
                          frac_steps_increasing=float((ds > 0).mean()), n_large_jumps=int(big.sum()), max_abs_step=float(np.abs(ds).max()),
@@ -625,7 +630,7 @@ def section_G(settings, ctx, out: Out):
     cap_rows = []
     for (ac, b), g in usable.groupby(["aircraft_label", "battery"]):
         ok = g[g.capacity_reason == "ok"]
-        tau = stats.spearmanr(ok.start_datetime.map(pd.Timestamp.toordinal), ok.implied_capacity_ah)[0] if len(ok) > 5 else np.nan
+        tau = stats.spearmanr(_days(ok.start_datetime), ok.implied_capacity_ah, nan_policy="omit")[0] if len(ok) > 5 else np.nan
         cap_rows.append(dict(aircraft=ac, battery=b, sessions_tried=len(g), n_ok=len(ok), coverage=len(ok) / max(len(g), 1),
                              median_ah=ok.implied_capacity_ah.median(), iqr_ah=ok.implied_capacity_ah.quantile(.75) - ok.implied_capacity_ah.quantile(.25),
                              cv=ok.implied_capacity_ah.std() / ok.implied_capacity_ah.mean() if len(ok) > 2 else np.nan, spearman_vs_date=tau,

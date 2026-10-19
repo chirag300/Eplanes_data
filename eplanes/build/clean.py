@@ -160,7 +160,8 @@ def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list
     flags[np.isfinite(dt) & (dt == 0)] |= FLAG_BITS["duplicate_time"]
     flags[np.isfinite(dt) & (dt < 0)] |= FLAG_BITS["nonmonotonic_time"]
     if np.isfinite(med_dt):
-        flags[np.isfinite(dt) & (dt > cq["gap_factor"] * med_dt)] |= FLAG_BITS["after_gap"]
+        gap_thr = max(cq["gap_factor"] * med_dt, cq.get("gap_min_s", 2.0) / 60.0)
+        flags[np.isfinite(dt) & (dt > gap_thr)] |= FLAG_BITS["after_gap"]
 
     # start-up analysis (on time-sorted valid rows only)
     cols = {c: d[c].to_numpy(float) for c in present}

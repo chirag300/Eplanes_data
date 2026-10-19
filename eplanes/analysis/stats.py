@@ -229,7 +229,7 @@ def run_stats(settings: Settings, rule="settle", log=print) -> pd.DataFrame:
 
     # H8 data-quality problems concentrated by aircraft / type
     fl = pd.read_csv(settings.data_dir / "processed" / "flights_with_qc.csv")
-    fl["has_gap"] = fl.n_gaps > 0
+    fl["has_gap"] = fl["has_gap"].astype(bool) if "has_gap" in fl else fl.n_gaps > 0
     fl["any_oor"] = fl.n_out_of_range > 0
     fl["label_mismatch"] = fl.label_content_mismatch.fillna(False).astype(bool)
     for var in ("has_gap", "any_oor", "label_mismatch"):

@@ -146,7 +146,7 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
             zp.write_bytes(data)
             mp = raw / "meta" / label / f"flight_{fid}.json"
             mp.parent.mkdir(parents=True, exist_ok=True)
-            info = {"Date": when.strftime("%B %d, %Y, %I:%M %p").replace(" 0", " "),
+            info = {"Date": "unparseable date" if (k == 1 and ai == 0) else when.strftime("%B %d, %Y, %I:%M %p").replace(" 0", " "),
                     "Flight type": kind.capitalize(), "Registration": label if label.startswith("C-") else "",
                     "Serial number": "" if label.startswith("C-") else label}
             mp.write_text(json.dumps({"flight_id": fid, "account": acct, "aircraft_id": aid, "aircraft_label": label,

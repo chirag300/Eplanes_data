@@ -59,7 +59,8 @@ screening_bounds:          # screening limits, NOT physical limits; used only to
 
 quality:
   nominal_dt_min: 0.02
-  gap_factor: 5.0          # a gap is dt > gap_factor * median dt
+  gap_factor: 5.0          # a gap is dt > gap_factor * median dt ...
+  gap_min_s: 2.0           # ... and longer than this (10 Hz logs jitter by a few hundred ms)
   settle_window_min: [1.0, 3.0]   # reference window used to define the "settled" value
   settle_k_mad: 3.0        # tolerance = k * robust sigma of the settled window
   max_init_min: 5.0        # search limit for the settling time

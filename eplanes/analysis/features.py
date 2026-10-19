@@ -225,7 +225,8 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
     dts = np.diff(t)
     pos = dts[np.isfinite(dts) & (dts > 0)]
     med_dt = float(np.median(pos)) if len(pos) else np.nan
-    max_dt = cfg["quality"]["gap_factor"] * med_dt if np.isfinite(med_dt) else np.inf
+    # an interval counts as a logging gap only if longer than gap_factor x median step AND gap_min_s
+    max_dt = max(cfg["quality"]["gap_factor"] * med_dt, cfg["quality"].get("gap_min_s", 2.0) / 60.0) if np.isfinite(med_dt) else np.inf
     # timestamp-alignment rules (sensitivity): logged | uniform (index x median dt) | gapbridge (integrate across gaps)
     if time_rule == "uniform" and np.isfinite(med_dt):
         t = np.arange(len(t)) * med_dt
