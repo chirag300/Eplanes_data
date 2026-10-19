@@ -95,6 +95,9 @@ def run_download(settings: Settings, accounts: list[str] | None = None,
                         rec["meta_path"] = str(mp)
                         if not page.download_url:
                             rec.update(status="no_csv", http_note="no download link")
+                        elif page.download_url.rstrip("/").endswith("processed_data"):
+                            # link points at the folder, not a file: the portal has no CSV for this session
+                            rec.update(status="no_csv", http_note="download link has no file name")
                         else:
                             data = portal.download_zip(sess, page.download_url, dl["max_retries"],
                                                        dl["backoff_base_s"], dl["timeout_s"], log)
