@@ -24,6 +24,14 @@ def _days(s: pd.Series) -> np.ndarray:
     return ((pd.to_datetime(s) - pd.Timestamp("1970-01-01")).dt.total_seconds() / 86400.0).to_numpy(float)
 
 
+def _date_axis(ax):
+    """Readable date ticks (avoids overlapping YYYY-MM labels on multi-year axes)."""
+    import matplotlib.dates as mdates
+    loc = mdates.AutoDateLocator(minticks=4, maxticks=8)
+    ax.xaxis.set_major_locator(loc)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
+
+
 TYPE_COLOR = {"flight test": BLUE, "charging": AQUA, "ground test": ORANGE}
 
 
@@ -76,11 +84,17 @@ def section_A(settings, ctx, out: Out):
     # timeline
     acs = _ac_order(fl)
     fig, ax = plt.subplots(figsize=(8.5, 0.7 * len(acs) + 1.6))
+    seen = set()
     for i, ac in enumerate(acs):
         g = fl[fl.aircraft_label == ac]
-        for k, c in TYPE_COLOR.items():
+        for j, (k, c) in enumerate(TYPE_COLOR.items()):
             gg = g[g.flight_type == k]
-            ax.scatter(gg.start_datetime, np.full(len(gg), i), s=14, color=c, alpha=0.8, label=k if i == 0 else None, linewidths=0)
+            if not len(gg):
+                continue
+            # one lane per session type so flight tests are not hidden under charging markers
+            ax.scatter(gg.start_datetime, np.full(len(gg), i + (j - 1) * 0.22), s=12, color=c, alpha=0.8,
+                       label=k if k not in seen else None, linewidths=0)
+            seen.add(k)
     ax.set_yticks(range(len(acs)), acs)
     ax.set_ylim(-0.6, len(acs) - 0.4)
     ax.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.2))
@@ -773,7 +787,7 @@ def section_G(settings, ctx, out: Out):
         dict(indicator="DC internal resistance proxy", signals="cell voltage, current, SOC", method="windowed dV/dI (60 s, std(I)>=2 A, dSOC<=1, R2>=0.5)",
              assumptions="load steps/variation exist; temperature known; OCV drift small in window", coverage=float(rr.coverage.mean()) if len(rr) else 0.0,
              spread_cv=agg(rr, "cv"), consistency=np.nan, grade=grade(float(rr.coverage.mean()) if len(rr) else 0.0, agg(rr, "cv")),
-             limitation="Only min/max cell voltage logged (no pack voltage); per-cell value is a proxy; strongly temperature dependent; smooth charger ramps give weak current variation."),
+             limitation="Per-cell value derived from pack voltage and current steps; strongly temperature dependent (correct for start temperature before trending); smooth charger ramps give weak current variation."),
         dict(indicator="Charging taper / CC-CV phases", signals="current, max cell voltage", method="plateau (within 1% of p90 for >= max(5 min, 15% of segment)) then monotone decay below 50% with cell voltage near its maximum",
              assumptions="charger uses CC-CV", coverage=float(taper_cov), spread_cv=np.nan, consistency=float(cc_cov), grade=grade(float(taper_cov), None) if taper_cov >= 0.05 else "not recoverable",
              limitation=f"CC plateau found in {cc_cov:.0%} and taper in {taper_cov:.0%} of charging sessions; observed profiles are ramp-like."),
@@ -827,6 +841,7 @@ def section_G(settings, ctx, out: Out):
             ax.scatter(g.start_datetime, g.implied_capacity_ah, s=14, color=col, marker=mk, alpha=0.8, label=ac, linewidths=0)
         ax.set_ylabel("matched-window capacity [Ah]")
         ax.set_xlabel("session date")
+        _date_axis(ax)
         ax.legend(fontsize=7)
         out.figs.save(fig, "G2_window_capacity_vs_time", "Capacity estimated from single monotone passes inside the SOC window (battery 1). "
                       "Estimates are shown without smoothing; sparse coverage limits trend inference.")
@@ -1012,6 +1027,7 @@ def section_F_bms(settings, ctx, out: Out):
             ax.scatter(g.start_datetime, g.soh_cell_cells_last_max - g.soh_cell_cells_last_min, s=10, color=col, marker=mk,
                        alpha=0.7, label=ac, linewidths=0)
         ax.set_ylabel("per-cell SOH spread, max - min [points]")
+        _date_axis(ax)
         ax.legend(fontsize=7, ncol=len(acs))
         out.figs.save(fig, "F7_percell_soh_spread", "Spread of the BMS's per-cell SOH values within each pack (maximum minus minimum over 96 cells), "
                       "excluding uniform-cell sessions.")

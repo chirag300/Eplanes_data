@@ -122,8 +122,8 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
                            "The offset changes between seasons, consistent with UTC avionics time and local portal time. ")
                         + "Per-session values: qc_gps_clock_vs_portal.csv.")
         f = f.merge(g[["flight_id", "offset_h_rounded"]], on="flight_id", how="left")
-        limits.append("Portal start times are minute-resolution local times of undocumented zone; absolute times are cross-checked against "
-                      "the avionics clock only for sessions where the avionics are alive (not charging).")
+        limits.append("Portal start times have minute resolution and an undocumented zone; the zone is inferred from the avionics GPS clock, "
+                      "which is only available for sessions where the avionics are alive (rarely while charging).")
     else:
         limits.append("Portal timestamps give the session START (date and time of day) only; the time zone is not documented and "
                       "within-session time is `time_min` from the start.")

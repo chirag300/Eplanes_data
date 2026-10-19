@@ -47,7 +47,7 @@ def write_key_findings(settings: Settings) -> str:
                   "## Unresolved questions",
                   "- Physical cause of start-up artefacts (logger zero-fill vs resampling vs sensor/BMS warm-up).",
                   "- Whether SOH jumps coincide with maintenance, BMS recalibration or firmware events (needs the maintenance log).",
-                  "- Pack topology (series cell count) for kW/kWh estimates; time zone of portal timestamps.",
+                  "- Why battery 2 shows constant-current charging plateaus more often than battery 1.",
                   "- Permission from the dataset owners to redistribute raw/cleaned data."]
     md = "\n".join(parts)
     (od / "KEY_FINDINGS.md").write_text(md)
