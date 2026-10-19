@@ -83,7 +83,8 @@ outputs/eplanes_results_*.zip       the archive to upload back for paper writing
 * **Quality gate.** `analyze`, `stats` and `sensitivity` stop unless `outputs/quality/QUALITY_COMPLETE.json` exists.
 * **Observability is tested, including negative results.** CC/CV phases and dQ/dV use strict criteria with a positive and a negative control in the unit tests.
 * **Statistics.** Flight is the unit of analysis (never samples); non-parametric tests; Holm within hypothesis family, BH globally; effect sizes and bootstrap CIs;
-  per-aircraft-day collapsed robustness p-values; small-n tests flagged exploratory.
+  per-aircraft-day collapsed robustness p-values; small-n (<30) or degenerate tests (|rho|=1, zero-width CI) are flagged and never counted as claimable findings (`claimable` column).
+* **Trends** are reported on calendar-month medians (G4) next to per-session Theil-Sen slopes, because busy months contribute many sessions.
 * **What the portal export contains** (checked on real sessions, Oct 2026): a main log at 10 Hz (~90 columns: pack voltage and current,
   SOC/SOH, min/max/avg and 16 individual cell temperatures per pack, drivetrain, and an avionics block with OAT, pressure altitude,
   IAS, GPS, attitude) plus one BMS file per pack at 5 Hz (Kalman and coulomb SOC, 96 per-cell SOH / capacity / FSK values,
@@ -112,5 +113,5 @@ outputs/eplanes_results_*.zip       the archive to upload back for paper writing
 ## Tests
 
 ```bash
-python -m pytest -q          # ~25 tests, ~2-3 min, no network
+python -m pytest -q          # 28 tests, ~2 min, no network
 ```

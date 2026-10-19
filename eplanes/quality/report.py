@@ -277,9 +277,16 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
                         f"({pl.fleet_median_ah_per_soc_point.iloc[0]:.3f} Ah per point, i.e. ~{100 * pl.fleet_median_ah_per_soc_point.iloc[0]:.0f} Ah per 100 points) "
                         "or current / cell voltage exceed physical limits. Reported SOC/SOH stay normal, so this is a logging/scaling fault; "
                         "these sessions are excluded from current-, voltage- and energy-based analyses (blocks B, D, G).")
-    tot = fam.drop(columns="aircraft_label").sum()
-    findings.append("Out-of-range samples by signal (all packs, leading zeros excluded): " +
-                    ", ".join(f"{k}={int(v):,}" for k, v in tot.groupby(lambda c: c.split("_", 1)[1]).sum().sort_values(ascending=False).items() if v > 0) + ".")
+    anom_ids = set(an.flight_id)
+    oor_sig["scale_anomaly"] = oor_sig.flight_id.isin(anom_ids)
+    fam2 = oor_sig.drop(columns=["flight_id"]).groupby(["aircraft_label", "scale_anomaly"]).sum().reset_index()
+    fam2.to_csv(qdir / "qc_out_of_range_by_signal_split.csv", index=False)
+    def _fmt(df):
+        tot = df.drop(columns=["aircraft_label", "scale_anomaly"]).sum()
+        parts = [f"{k}={int(v):,}" for k, v in tot.groupby(lambda c: c.split("_", 1)[1]).sum().sort_values(ascending=False).items() if v > 0]
+        return ", ".join(parts) if parts else "none"
+    findings.append("Out-of-range samples by signal (all packs, leading zeros excluded) - normal sessions: " + _fmt(fam2[~fam2.scale_anomaly]) +
+                    "; scale-anomaly sessions: " + _fmt(fam2[fam2.scale_anomaly]) + ".")
 
     # 8 usability matrix ------------------------------------------------------------
     minr = cfg["quality"]["min_flight_rows"]

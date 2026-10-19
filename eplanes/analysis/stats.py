@@ -252,10 +252,21 @@ def run_stats(settings: Settings, rule="leadzero", log=print) -> pd.DataFrame:
         for fam, idx in res.groupby("family").groups.items():
             res.loc[idx, "p_holm_family"] = holm(res.loc[idx, "p"].values)
         res["q_bh_global"] = bh(res["p"].values)
-        res["exploratory_flag"] = (res.n.fillna(0) < 30) | res.note.fillna("").str.contains("exploratory|expected counts")
-        res["interpretation"] = np.where(res.p_holm_family < 0.05, "evidence against H0 after Holm correction within family",
-                                         np.where(res.p < 0.05, "nominal p<0.05 only; does not survive family correction -> not claimed",
-                                                  "no evidence against H0 (absence of evidence, not proof of equality)"))
+        degenerate = (res.effect_name.isin(["rho", "Spearman rho"]) & (res.effect.abs() >= 0.999)) | \
+                     (res.get("ci_low", pd.Series(np.nan, index=res.index)) == res.get("ci_high", pd.Series(np.nan, index=res.index)))
+        res["degenerate_flag"] = degenerate.fillna(False)
+        res["exploratory_flag"] = (res.n.fillna(0) < 30) | res.note.fillna("").str.contains("exploratory|expected counts") | res.degenerate_flag
+        res["claimable"] = (res.p_holm_family < 0.05) & ~res.exploratory_flag
+        res["interpretation"] = np.select(
+            [res.degenerate_flag,
+             res.claimable,
+             (res.p_holm_family < 0.05) & res.exploratory_flag,
+             res.p < 0.05],
+            ["degenerate (perfect rank agreement or zero-width CI, usually tiny n or tied data) -> not interpretable",
+             "evidence against H0 after Holm correction within family",
+             "survives Holm but exploratory (n<30 or dependence) -> report as indicative only",
+             "nominal p<0.05 only; does not survive family correction -> not claimed"],
+            "no evidence against H0 (absence of evidence, not proof of equality)")
     res.to_csv(out_dir / "H0_hypothesis_tests.csv", index=False)
     if pairs:
         pd.concat(pairs, ignore_index=True).to_csv(out_dir / "H1_pairwise_posthoc.csv", index=False)

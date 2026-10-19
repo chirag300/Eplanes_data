@@ -171,6 +171,22 @@ def section_B(settings, ctx, out: Out):
             r[f"{c}_q75"] = g[c].quantile(.75)
         rows.append(r)
     out.table(pd.DataFrame(rows), "B1_flight_profile_summary")
+    # drivetrain cross-check: motor power channel vs summed pack power (session level, battery-1 row holds both)
+    dcols = [c for c in ("pack_total_power_peak_kw", "motor_power_peak_kw", "motor_over_pack_power_median") if c in ft]
+    if len(dcols) == 3:
+        d = ft[ft.battery == 1].dropna(subset=dcols)
+        if len(d):
+            drows = []
+            for ac, g in d.groupby("aircraft_label"):
+                ratio = g.motor_over_pack_power_median
+                drows.append(dict(aircraft=ac, n_flights=len(g), pack_total_peak_kw_median=g.pack_total_power_peak_kw.median(),
+                                  motor_peak_kw_median=g.motor_power_peak_kw.median(),
+                                  motor_over_pack_median=ratio.median(), motor_over_pack_q25=ratio.quantile(.25), motor_over_pack_q75=ratio.quantile(.75),
+                                  spearman_peaks=stats.spearmanr(g.pack_total_power_peak_kw, g.motor_power_peak_kw)[0] if len(g) > 5 else np.nan))
+            dt = out.table(pd.DataFrame(drows), "B1b_drivetrain_power_check")
+            out.note("B: drivetrain check - logged motor power / (pack 1 + pack 2 power from V x I), median per flight: " + "; ".join(
+                f"{r.aircraft} {r.motor_over_pack_median:.2f} (IQR {r.motor_over_pack_q25:.2f}-{r.motor_over_pack_q75:.2f})" for r in dt.itertuples()) +
+                ". A ratio near 0.9-1.0 supports the current sign/scale and the kW figures; a very different value means the motor channel has other units or meaning.")
     out.note(f"B: {ft.flight_id.nunique()} usable flight-test sessions for profile analysis; "
              f"pack power in kW is {'computed' if cfg.get('n_series_cells') else 'NOT computed (n_series_cells unset): current and per-cell power index only'}.")
 
@@ -608,6 +624,51 @@ def _bms_cov(settings):
     return float((b.get("n_valid_rows", pd.Series(dtype=float)).fillna(0) > 0).mean()) if len(b) else 0.0
 
 
+def _trend(t_years, y):
+    ok = np.isfinite(t_years) & np.isfinite(y)
+    if ok.sum() < 4 or np.ptp(t_years[ok]) <= 0:
+        return (np.nan, np.nan, np.nan)
+    ts = stats.theilslopes(y[ok], t_years[ok])
+    return (ts.slope, ts.low_slope, ts.high_slope)
+
+
+def monthly_trends(settings, ctx, cap, min_months=6):
+    """Fade trends on calendar-month medians next to the per-session Theil-Sen slope.
+
+    Sessions cluster in time (busy months contribute many sessions), so a per-session slope weights those months heavily;
+    monthly medians give each observed month one vote."""
+    series = []
+    base = ctx.dropna(subset=["start_datetime"])
+    if "scale_anomaly" in base:
+        base = base[~base.scale_anomaly.fillna(False).astype(bool)]
+    if "soh_median" in base:
+        series.append(("reported SOH", "pts", base[["aircraft_label", "battery", "start_datetime", "soh_median"]].rename(columns={"soh_median": "y"})))
+    b = bms_context(settings, ctx)
+    for col, name in (("soh_cell_cells_last_mean", "mean per-cell SOH (BMS)"), ("soh_cell_cells_last_min", "min per-cell SOH (BMS)")):
+        if len(b) and col in b:
+            series.append((name, "pts", b[["aircraft_label", "battery", "start_datetime", col]].rename(columns={col: "y"})))
+    if len(cap):
+        series.append(("window capacity", "Ah", cap[["aircraft_label", "battery", "start_datetime", "implied_capacity_ah"]].rename(columns={"implied_capacity_ah": "y"})))
+    rows = []
+    for name, unit, d in series:
+        d = d.dropna()
+        for (ac, bt), g in d.groupby(["aircraft_label", "battery"]):
+            if len(g) < 8:
+                continue
+            t = _days(g.start_datetime) / 365.25
+            s_sl, _, _ = _trend(np.asarray(t, float), g.y.to_numpy(float))
+            m = g.assign(month=g.start_datetime.dt.to_period("M")).groupby("month").y.agg(["median", "size"])
+            tm = _days(pd.Series([p.start_time + pd.Timedelta(days=15) for p in m.index])) / 365.25
+            m_sl, lo, hi = _trend(tm, m["median"].to_numpy(float)) if len(m) >= min_months else (np.nan, np.nan, np.nan)
+            first = m["median"].iloc[0]
+            rows.append(dict(aircraft=ac, battery=bt, quantity=name, unit=unit, n_sessions=len(g), n_months=len(m),
+                             sessions_per_month_max=int(m["size"].max()), session_slope_per_year=s_sl,
+                             monthly_slope_per_year=m_sl, monthly_ci_low=lo, monthly_ci_high=hi,
+                             monthly_pct_per_year=100 * m_sl / first if first else np.nan,
+                             first_month=str(m.index[0]), last_month=str(m.index[-1])))
+    return pd.DataFrame(rows)
+
+
 def section_G(settings, ctx, out: Out):
     cfg = settings.raw
     rows = []
@@ -674,6 +735,14 @@ def section_G(settings, ctx, out: Out):
         r0_rows.append(dict(aircraft=ac, battery=b, sessions=len(g), n_ok=len(ok), coverage=len(ok) / max(len(g), 1), median_mohm_per_cell=ok.r0_proxy_mohm_cell.median(),
                             cv=ok.r0_proxy_mohm_cell.std() / ok.r0_proxy_mohm_cell.mean() if len(ok) > 2 else np.nan, spearman_vs_start_temp=rho))
     rr = out.table(pd.DataFrame(r0_rows), "G3_resistance_proxy")
+    g4 = monthly_trends(settings, ctx, cap)
+    if len(g4):
+        out.table(g4, "G4_trend_monthly_vs_session")
+        ok4 = g4.dropna(subset=["monthly_slope_per_year"])
+        out.note("G: trends per year on monthly medians (robust to months with many sessions) vs per-session Theil-Sen: " + "; ".join(
+            f"{r.aircraft} b{r.battery} {r.quantity}: {r.monthly_slope_per_year:+.1f} [{r.monthly_ci_low:+.1f}, {r.monthly_ci_high:+.1f}] "
+            f"vs {r.session_slope_per_year:+.1f} {r.unit}/yr ({r.n_months} months)"
+            for r in ok4[ok4.battery == 1].itertuples()) + ". Prefer the monthly figures; CIs are wide because few months are observed.")
     # 5/6 charging taper & dQ/dV
     chg = ctx[(ctx.D_charging == True) & (ctx.charge_time_min.fillna(0) > 3)]
     taper_cov = chg.chg_has_taper.mean() if len(chg) else 0.0

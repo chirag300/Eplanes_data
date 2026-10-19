@@ -24,8 +24,11 @@ def write_key_findings(settings: Settings) -> str:
     if (t / "H0_hypothesis_tests.csv").exists():
         h = pd.read_csv(t / "H0_hypothesis_tests.csv")
         sig = h[h.get("p_holm_family", pd.Series(dtype=float)) < 0.05]
-        parts += ["## Hypothesis tests", f"- {len(h)} tests run; {len(sig)} survive Holm correction within their family "
-                  f"({', '.join(sig.id.head(12)) or 'none'}).",
+        claim = sig[sig.claimable] if "claimable" in sig else sig
+        ind = sig.drop(claim.index)
+        parts += ["## Hypothesis tests", f"- {len(h)} tests run; {len(sig)} survive Holm correction within their family. "
+                  f"Claimable (n>=30, not degenerate): {', '.join(claim.id.head(15)) or 'none'}. "
+                  f"Indicative only (small n / dependence / degenerate): {', '.join(ind.id.head(15)) or 'none'}.",
                   f"- {int(h.exploratory_flag.sum()) if 'exploratory_flag' in h else 'n/a'} tests are flagged exploratory (small n or dependence).", ""]
     if (t / "S3_sensitivity_verdict.csv").exists():
         v = pd.read_csv(t / "S3_sensitivity_verdict.csv")
