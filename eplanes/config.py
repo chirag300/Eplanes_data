@@ -26,21 +26,31 @@ RAW_TO_CANON = {
     "bat 1 max cell temp": "bat_1_max_cell_temp",
     "bat 2 max cell temp": "bat_2_max_cell_temp",
     "bat 1 avg cell temp": "bat_1_avg_cell_temp",
+    "bat 2 avg cell temp": "bat_2_avg_cell_temp",
+    "bat 1 voltage": "bat_1_voltage",
+    "bat 2 voltage": "bat_2_voltage",
+    "bat 1 min cell temp": "bat_1_min_cell_temp",
+    "bat 2 min cell temp": "bat_2_min_cell_temp",
 }
+
+# Avionics / drivetrain columns used by the analysis (kept as logged; all other columns pass through untouched)
+AVIONICS = ["oat", "pressure_alt", "ias", "acc_norm", "ground_speed", "motor_power", "motor_rpm", "timestamp"]
 
 # Signals analysed per battery (suffix after bat_<k>_)
 BAT_SIGNALS = ["min_cell_volt", "max_cell_volt", "soc", "soh", "current",
                "max_cell_temp", "avg_cell_temp"]
 
 SIGNAL_DESCRIPTIONS = {
-    "time_min": ("Time since start of the recording", "min"),
+    "time_min": ("Time since start of the recording (main log at 10 Hz; BMS files at 5 Hz)", "min"),
+    "voltage": ("Pack voltage (96 cells in series)", "V"),
+    "min_cell_temp": ("Lowest cell temperature in the pack (integer)", "degC"),
     "min_cell_volt": ("Lowest cell voltage in the pack", "mV (inferred)"),
     "max_cell_volt": ("Highest cell voltage in the pack", "mV (inferred)"),
     "soc": ("BMS-reported state of charge (integer-quantised)", "%"),
     "soh": ("BMS-reported state of health (NOT a measured capacity)", "%"),
     "current": ("Pack current; negative = charging", "A"),
     "max_cell_temp": ("Highest cell temperature in the pack", "degC"),
-    "avg_cell_temp": ("Mean cell temperature (present for battery 1 only)", "degC"),
+    "avg_cell_temp": ("Mean cell temperature (battery 2 absent in the older 14-column export only)", "degC"),
 }
 
 

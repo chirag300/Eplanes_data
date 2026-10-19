@@ -32,7 +32,8 @@ python -m eplanes download          # resumable; re-run after any interruption; 
 Run order after the download (each step is also available on its own):
 
 ```bash
-python -m eplanes build-raw        # data/raw_combined/  combined RAW dataset (nothing changed)
+python scripts/inspect_flight.py 4574   # optional: per-column summary of one session (units, rates)
+python -m eplanes build-raw        # data/raw_combined/  combined RAW dataset (nothing changed); --with-aux also converts BMS files
 python -m eplanes build-clean      # data/processed/     analysis-ready dataset (flags + derived columns; no rows deleted)
 python -m eplanes quality          # outputs/quality/    QC report + usability matrix + QUALITY GATE
 python -m eplanes analyze          # outputs/figures, outputs/tables   (refuses to run before the gate exists)
@@ -81,12 +82,27 @@ outputs/eplanes_results_*.zip       the archive to upload back for paper writing
 * **Observability is tested, including negative results.** CC/CV phases and dQ/dV use strict criteria with a positive and a negative control in the unit tests.
 * **Statistics.** Flight is the unit of analysis (never samples); non-parametric tests; Holm within hypothesis family, BH globally; effect sizes and bootstrap CIs;
   per-aircraft-day collapsed robustness p-values; small-n tests flagged exploratory.
-* **Units are inferred** (cell voltage mV, current A with negative = charging, temperature degC). Pack power in kW needs `n_series_cells` in `config.yaml` (left unset).
-* **Phases** (takeoff/cruise/landing) are current-defined proxies; altitude and airspeed are not logged. Ambient temperature is not logged.
+* **What the portal export contains** (checked on real sessions, Oct 2026): a main log at 10 Hz (~90 columns: pack voltage and current,
+  SOC/SOH, min/max/avg and 16 individual cell temperatures per pack, drivetrain, and an avionics block with OAT, pressure altitude,
+  IAS, GPS, attitude) plus one BMS file per pack at 5 Hz (Kalman and coulomb SOC, 96 per-cell SOH / capacity / FSK values,
+  capacity estimate, reset flags, model terms) and a warnings file.
+* **Units** are inferred from magnitudes and re-checked in the QC report: pack voltage V, cell voltage mV, current A
+  (negative = charging), temperatures degC (integer), OAT degC, pressure altitude assumed m. Pack topology 96 cells in series
+  (pack/cell voltage ratio and the BMS cell count); kW and kWh come from pack voltage x current.
+* **Avionics block** channels are exactly 0 when the avionics are off (e.g. charging); `avionics_valid` (ACC_NORM > 0.5 g) separates
+  "not logged" from a true 0 degC OAT. Flight phases (climb/cruise/descent) come from pressure altitude when it is alive;
+  current-defined proxies are kept as a complement.
+* **Invalid-value markers** (65535, e.g. motor rpm) are flagged (`quality_flag` bit 256). Some BMS model terms are signed 16-bit values
+  stored unsigned (65488 = -48); they are reported as logged.
+* **BMS internals** (`eplanes/build/bms.py`, run in the quality stage, cached per session) are summarised per session and pack,
+  including a *uniform-cell* signature (all 96 cells report identical SOH and capacity) consistent with an estimator reset;
+  hypothesis H9 tests whether reported-SOH increases coincide with entering that state.
 
 ## Data governance
 
 * `.env`, `data/`, `outputs/` and all ZIP/parquet files are git-ignored. `tests/test_repo_hygiene.py` fails if a password literal is committed. `package` scans the ZIP for credentials before writing it.
+* The export contains **GPS positions** (LAT/LNG) that reveal home airfields and routes; drop or coarsen them before any public release.
+* The BMS files expose the manufacturer's **internal estimator state**; ask Pipistrel whether it may be redistributed.
 * **Raw and cleaned flight data are not in this repository.** Confirm with the account owners/Pipistrel that redistribution is permitted before publishing any data
   (and decide whether registrations/serials such as C-GAUW should be anonymised in the release).
 * Passwords currently sit in plain text in your notebooks; treat them as exposed if those notebooks were ever shared.
@@ -94,5 +110,5 @@ outputs/eplanes_results_*.zip       the archive to upload back for paper writing
 ## Tests
 
 ```bash
-python -m pytest -q          # 19 tests, ~40 s, no network
+python -m pytest -q          # ~25 tests, ~2-3 min, no network
 ```

@@ -224,7 +224,7 @@ def section_B(settings, ctx, out: Out):
         out.table(ph, "B2_phase_proxies")
         frac = ph.has_pattern.mean()
         out.note(f"B: a climb -> plateau -> tail current pattern is identifiable in {frac:.0%} of usable flights "
-                 f"(n={len(ph)}); phases are CURRENT-DEFINED PROXIES because altitude/airspeed are not logged.")
+                 f"(n={len(ph)}); these are CURRENT-DEFINED proxies, complementary to the altitude-based phases in table B3.")
     if path_cache:
         n = len(path_cache)
         fig, axes = plt.subplots(4, n, figsize=(3.3 * n, 6.5), sharex="col", squeeze=False)
@@ -407,8 +407,30 @@ def section_E(settings, ctx, out: Out):
                          temp_max_median=g.temp_max_c.median(), temp_max_p95=g.temp_max_c.quantile(.95), temp_max_max=g.temp_max_c.max(),
                          temp_rise_median=g.temp_delta_c.median()))
     out.table(pd.DataFrame(rows), "E1_thermal_summary")
-    out.note("E: ambient temperature is NOT logged. Only cell temperatures are available: max cell temperature (both packs) and average "
-             "cell temperature (battery 1 only). The first valid cell temperature of a session is used as a start-of-session proxy, NOT as ambient.")
+    n_oat = int(th[th.battery == 1].oat_c_median.notna().sum()) if "oat_c_median" in th else 0
+    out.note(f"E: ambient (outside air temperature, OAT) is logged only while the avionics block is alive: available for {n_oat} of "
+             f"{th.flight_id.nunique()} thermally usable sessions (none for charging with avionics off). Elsewhere only cell temperatures exist; "
+             "the first valid cell temperature is then a start-of-session proxy, NOT ambient.")
+    if n_oat:
+        g = th[th.oat_c_median.notna()].copy()
+        g["temp_max_minus_oat"] = g.temp_max_c - g.oat_c_median
+        out.table(g.groupby(["aircraft_label", "battery", "flight_type"]).agg(
+            n=("flight_id", "size"), oat_median=("oat_c_median", "median"), temp_max_minus_oat_median=("temp_max_minus_oat", "median"),
+            ).reset_index(),
+            "E2_cell_vs_ambient")
+        fig, axes = plt.subplots(1, 2, figsize=(9, 3.5))
+        for i, ac in enumerate(_ac_order(g)):
+            gg = g[(g.aircraft_label == ac) & (g.battery == 1)]
+            col, mk = aircraft_color(ac, i)
+            axes[0].scatter(gg.oat_c_median, gg.temp_max_c, s=12, color=col, marker=mk, alpha=0.7, label=ac, linewidths=0)
+            axes[1].scatter(gg.oat_c_median, gg.temp_max_minus_oat, s=12, color=col, marker=mk, alpha=0.7, linewidths=0)
+        lim = [g.oat_c_median.min(), g.oat_c_median.max()]
+        axes[0].plot(lim, lim, ":", color=INK2, lw=0.8)
+        axes[0].set_xlabel("outside air temperature, session median [degC]"); axes[0].set_ylabel("max cell temperature [degC]")
+        axes[1].set_xlabel("outside air temperature, session median [degC]"); axes[1].set_ylabel("max cell temp - OAT [degC]")
+        axes[0].legend(fontsize=7)
+        out.figs.save(fig, "E4_cell_temp_vs_oat", "Maximum cell temperature (battery 1) against logged outside air temperature for sessions with "
+                      "the avionics block alive (dotted line: equality), and the cell-over-ambient temperature rise.")
     acs = _ac_order(th)
     if not acs:
         return
@@ -571,6 +593,14 @@ def grade(cov, cv, r2=None):
     return {0: "unreliable", 1: "weak", 2: "moderate", 3: "good"}[min(int(score), 3)]
 
 
+def _bms_cov(settings):
+    p = settings.data_dir / "processed" / "bms_session.csv"
+    if not p.exists():
+        return 0.0
+    b = pd.read_csv(p, usecols=lambda c: c in ("uniform_cells", "n_valid_rows"))
+    return float((b.get("n_valid_rows", pd.Series(dtype=float)).fillna(0) > 0).mean()) if len(b) else 0.0
+
+
 def section_G(settings, ctx, out: Out):
     cfg = settings.raw
     rows = []
@@ -637,8 +667,8 @@ def section_G(settings, ctx, out: Out):
              limitation="Few sessions span the window; multi-pass sessions rejected to avoid double counting; depends on SOC accuracy."),
         dict(indicator="Energy throughput", signals="current (+ pack voltage for Wh)", method="Ah always; kWh only if series cell count known",
              assumptions="pack voltage reconstructable from cell voltage x series count", coverage=1.0 if usable.ah_throughput.notna().any() else 0.0, spread_cv=np.nan,
-             consistency=np.nan, grade="good (Ah) / not available (kWh)" if not cfg.get("n_series_cells") else "good",
-             limitation="Pack voltage is not logged; set n_series_cells in config.yaml after verifying pack topology."),
+             consistency=np.nan, grade="good" if usable.get("energy_discharged_kwh", pd.Series(dtype=float)).notna().any() else "good (Ah) / not available (kWh)",
+             limitation="Pack voltage is logged in the full export (0.1 V); the older 14-column export needs n_series_cells x mean cell voltage."),
         dict(indicator="DC internal resistance proxy", signals="cell voltage, current, SOC", method="windowed dV/dI (60 s, std(I)>=2 A, dSOC<=1, R2>=0.5)",
              assumptions="load steps/variation exist; temperature known; OCV drift small in window", coverage=float(rr.coverage.mean()) if len(rr) else 0.0,
              spread_cv=agg(rr, "cv"), consistency=np.nan, grade=grade(float(rr.coverage.mean()) if len(rr) else 0.0, agg(rr, "cv")),
@@ -650,6 +680,19 @@ def section_G(settings, ctx, out: Out):
              assumptions="low constant rate, >=30 SOC points, >=20 voltage bins", coverage=float(dq_cov), spread_cv=np.nan, consistency=np.nan,
              grade="not recoverable" if dq_cov < 0.05 else grade(float(dq_cov), None),
              limitation="Requires near-constant low-rate charge; only min/max cell voltage (not pack OCV); integer SOC."),
+        dict(indicator="Pack DC resistance (pack voltage vs current)", signals="pack voltage, current, SOC",
+             method="windowed dV/dI on the pack (60 s, std(I)>=2 A, dSOC<=1, R2>=0.5)", assumptions="as for the per-cell proxy",
+             coverage=float((usable.get("r0_pack_n_windows", pd.Series(dtype=float)).fillna(0) > 0).mean()) if len(usable) else 0.0,
+             spread_cv=float(usable.r0_pack_mohm.std() / usable.r0_pack_mohm.mean()) if "r0_pack_mohm" in usable and usable.r0_pack_mohm.notna().sum() > 2 else np.nan,
+             consistency=np.nan,
+             grade=grade(float((usable.get("r0_pack_n_windows", pd.Series(dtype=float)).fillna(0) > 0).mean()) if len(usable) else 0.0,
+                         float(usable.r0_pack_mohm.std() / usable.r0_pack_mohm.mean()) if "r0_pack_mohm" in usable and usable.r0_pack_mohm.notna().sum() > 2 else None),
+             limitation="Pack voltage is logged at 0.1 V and sample-and-hold; temperature and SOC dependence not removed."),
+        dict(indicator="BMS internal per-cell SOH / capacity estimates", signals="BMS files (_1/_2)",
+             method="reported as logged (96 cells per pack)", assumptions="internal estimator semantics undocumented",
+             coverage=float(_bms_cov(settings)), spread_cv=np.nan, consistency=np.nan,
+             grade="available, reported as BMS output (not independent)",
+             limitation="Not an independent measurement: produced by the same BMS whose SOH is under study; resets to uniform defaults occur."),
         dict(indicator="Calendar-time and utilisation indicators", signals="session dates, current", method="elapsed days, session counts, cumulative |Ah|, flights per month",
              assumptions="logged sessions are the complete history", coverage=1.0, spread_cv=np.nan, consistency=np.nan, grade="good (but confounded with each other)",
              limitation="Calendar time and throughput are collinear; unlogged use is invisible."),
@@ -688,12 +731,135 @@ def section_G(settings, ctx, out: Out):
                       "Estimates are shown without smoothing; sparse coverage limits trend inference.")
 
 
+# ───────────────────────── B (cont.). flight phases from altitude ─────────────
+
+def section_B_phases(settings, ctx, out: Out):
+    ft = ctx[(ctx.flight_type == "flight test") & (ctx.battery == 1)]
+    if "has_flight_state" not in ft or not len(ft):
+        return
+    rows = []
+    for ac, g in ft.groupby("aircraft_label"):
+        h = g[g.has_flight_state == True]  # noqa: E712
+        rows.append(dict(aircraft=ac, flight_tests=len(g), with_flight_state=len(h), frac=len(h) / max(len(g), 1),
+                         airborne_min_median=h.airborne_min.median(), climb_min_median=h.climb_min.median(),
+                         cruise_min_median=h.cruise_min.median(), descent_min_median=h.descent_min.median(),
+                         alt_gain_m_median=h.alt_gain_m.median(), power_peak_kw_median=g.power_peak_kw.median(),
+                         energy_kwh_median=g.energy_discharged_kwh.median()))
+    t = out.table(pd.DataFrame(rows), "B3_flight_phases_altitude")
+    out.note(f"B: altitude/vertical-rate phases are available for {int(t.with_flight_state.sum())} of {int(t.flight_tests.sum())} "
+             "flight-test sessions (avionics alive and >1 min above 30 m over the session's ground level; altitude assumed in metres).")
+    h = ft[ft.has_flight_state == True]  # noqa: E712
+    if len(h):
+        acs = _ac_order(h)
+        fig, ax = plt.subplots(figsize=(7, 0.6 * len(acs) + 1.6))
+        left = np.zeros(len(acs))
+        med = h.groupby("aircraft_label")[["climb_min", "cruise_min", "descent_min"]].median().reindex(acs)
+        for c, color in zip(["climb_min", "cruise_min", "descent_min"], [SEQ[2], SEQ[3], SEQ[5]]):
+            ax.barh(acs, med[c], left=left, color=color, edgecolor="#fcfcfb", linewidth=1.2, label=c.replace("_min", ""))
+            left += med[c].fillna(0).values
+        ax.set_xlabel("median minutes per flight")
+        ax.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.25))
+        out.figs.save(fig, "B4_flight_phase_durations", "Median time per flight-test session spent climbing (>+1 m/s), cruising and descending "
+                      "(<-1 m/s) while more than 30 m above the session's ground level, from pressure altitude.")
+
+
+# ───────────────────────── F (cont.). BMS internal state ─────────────────────
+
+def bms_context(settings, ctx):
+    p = settings.data_dir / "processed" / "bms_session.csv"
+    if not p.exists():
+        return pd.DataFrame()
+    b = pd.read_csv(p)
+    meta = ctx[["flight_id", "battery", "start_datetime", "flight_type", "ah_throughput"]].drop_duplicates(["flight_id", "battery"])
+    b = b.merge(meta, on=["flight_id", "battery"], how="inner").dropna(subset=["start_datetime"])
+    b = b.sort_values(["aircraft_label", "battery", "start_datetime", "flight_id"])
+    if "soh_median" in b:
+        b["d_soh"] = b.groupby(["aircraft_label", "battery"]).soh_median.diff()
+    if "uniform_cells" in b:
+        b["uniform_cells"] = b.uniform_cells.fillna(False).astype(bool)
+        b["prev_uniform"] = b.groupby(["aircraft_label", "battery"]).uniform_cells.shift(1).fillna(False).astype(bool)
+        b["enter_uniform"] = b.uniform_cells & ~b.prev_uniform
+    return b
+
+
+def section_F_bms(settings, ctx, out: Out):
+    b = bms_context(settings, ctx)
+    if b.empty or "uniform_cells" not in b:
+        out.note("F (BMS internals): no BMS files available; section skipped.")
+        return
+    b.to_csv(settings.outputs_dir / "tables" / "F5_bms_session_internals.csv", index=False)
+    rows = []
+    for (ac, bat), g in b.groupby(["aircraft_label", "battery"]):
+        rows.append(dict(aircraft=ac, battery=bat, sessions=len(g), uniform_cell_sessions=int(g.uniform_cells.sum()),
+                         entries_into_uniform=int(g.enter_uniform.sum()),
+                         soh_reported_median=g.soh_median.median() if "soh_median" in g else np.nan,
+                         mean_cell_soh_median=g.soh_cell_cells_last_mean.median() if "soh_cell_cells_last_mean" in g else np.nan,
+                         cell_soh_spread_median=(g.soh_cell_cells_last_max - g.soh_cell_cells_last_min).median() if "soh_cell_cells_last_max" in g else np.nan,
+                         soc_minus_kalman_median=g.soc_minus_kalman_median.median() if "soc_minus_kalman_median" in g else np.nan,
+                         soc_minus_coulomb_median=g.soc_minus_coulomb_median.median() if "soc_minus_coulomb_median" in g else np.nan))
+    out.table(pd.DataFrame(rows), "F6_bms_internal_summary")
+    ev = b.dropna(subset=["d_soh"]).copy()
+    ev["soh_step"] = np.select([ev.d_soh >= 2, ev.d_soh <= -2], ["increase >= 2", "decrease <= -2"], "within +/-2")
+    xt = pd.crosstab(ev.soh_step, ev.enter_uniform.map({True: "enters uniform-cell state", False: "no entry"}))
+    out.table(xt.reset_index(), "F7_soh_steps_vs_uniform_cell_entry")
+    inc = ev[ev.soh_step == "increase >= 2"]
+    out.note(f"F (BMS internals): {int(b.uniform_cells.sum())} battery-sessions show identical values in all cells (uniform-cell state); "
+             f"of {len(inc)} session-to-session reported-SOH increases of >= 2 points, {int(inc.enter_uniform.sum())} coincide with entering that state. "
+             "Formal test: H9 in the hypothesis table.")
+
+    acs = _ac_order(b)
+    fig, axes = plt.subplots(len(acs), 1, figsize=(9, 2.3 * len(acs) + 0.6), sharex=True, squeeze=False)
+    for ax, ac in zip(axes[:, 0], acs):
+        for bat in (1, 2):
+            g = b[(b.aircraft_label == ac) & (b.battery == bat)]
+            col, ls = BATTERY_STYLE[bat]
+            ax.plot(g.start_datetime, g.soh_median, ls, color=col, lw=0.8, label=f"reported SOH, battery {bat}")
+            if "soh_cell_cells_last_mean" in g:
+                ax.plot(g.start_datetime, g.soh_cell_cells_last_mean, ".", color=col, ms=3, alpha=0.6, label=f"mean per-cell SOH, battery {bat}")
+            u = g[g.uniform_cells]
+            ax.scatter(u.start_datetime, u.soh_median, s=36, facecolors="none", edgecolors=INK2, linewidths=1.0,
+                       label="uniform-cell state" if bat == 1 else None)
+        ax.set_ylabel(f"{ac}\nSOH [%]")
+    axes[0, 0].legend(ncol=3, fontsize=7, loc="lower right", bbox_to_anchor=(1, 1))
+    axes[-1, 0].set_xlabel("session date")
+    out.figs.save(fig, "F5_reported_vs_percell_soh", "Reported pack SOH (lines) and the mean of the BMS's 96 per-cell SOH values (dots) per session. "
+                  "Open circles mark sessions where every cell reports an identical SOH and capacity value, a state consistent with the "
+                  "estimator being reset to default values.")
+
+    if "soc_minus_kalman_median" in b:
+        fig, axes = plt.subplots(1, 2, figsize=(9, 3.3), sharey=True)
+        for ax, c, lab in zip(axes, ["soc_minus_kalman_median", "soc_minus_coulomb_median"], ["reported - Kalman SOC", "reported - coulomb SOC"]):
+            data = [b[b.aircraft_label == a][c].dropna() for a in acs]
+            bp = ax.boxplot([d if len(d) else [np.nan] for d in data], tick_labels=acs, showfliers=False, patch_artist=True, widths=0.55)
+            for i, (box, a) in enumerate(zip(bp["boxes"], acs)):
+                box.set(facecolor=aircraft_color(a, i)[0], alpha=0.35, edgecolor=INK2)
+            ax.axhline(0, color=INK2, lw=0.8)
+            ax.set_title(lab)
+            ax.tick_params(axis="x", rotation=30)
+        axes[0].set_ylabel("session median difference [SOC points]")
+        out.figs.save(fig, "F6_soc_estimator_differences", "Session-median difference between the reported (integer) SOC and the BMS's internal "
+                      "Kalman-filter SOC and coulomb-counter SOC, by aircraft (both packs).")
+
+    if "soh_cell_cells_last_max" in b:
+        fig, ax = plt.subplots(figsize=(8, 3.3))
+        for i, ac in enumerate(acs):
+            g = b[(b.aircraft_label == ac) & ~b.uniform_cells]
+            col, mk = aircraft_color(ac, i)
+            ax.scatter(g.start_datetime, g.soh_cell_cells_last_max - g.soh_cell_cells_last_min, s=10, color=col, marker=mk,
+                       alpha=0.7, label=ac, linewidths=0)
+        ax.set_ylabel("per-cell SOH spread, max - min [points]")
+        ax.legend(fontsize=7, ncol=len(acs))
+        out.figs.save(fig, "F7_percell_soh_spread", "Spread of the BMS's per-cell SOH values within each pack (maximum minus minimum over 96 cells), "
+                      "excluding uniform-cell sessions.")
+
+
 def run_eda(settings: Settings, rule="settle", log=print):
     require_quality_gate(settings)
     ctx = load_context(settings, rule, recompute=True)
     out = Out(settings)
     for name, fn in (("A", section_A), ("B", section_B), ("C", section_C), ("D", section_D),
-                     ("E", section_E), ("F", section_F), ("G", section_G)):
+                     ("B-phases", section_B_phases), ("E", section_E), ("F", section_F), ("F-bms", section_F_bms),
+                     ("G", section_G)):
         log(f"[eda] section {name}")
         fn(settings, ctx, out)
     (settings.outputs_dir / "analysis_summary.md").write_text("# Analysis summary (auto-generated from results)\n\n" + "\n\n".join(f"- {n}" for n in out.notes) + "\n")

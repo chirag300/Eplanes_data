@@ -26,19 +26,24 @@ import pyarrow.parquet as pq
 from ..config import RAW_TO_CANON, Settings
 from ..quality.init_artifacts import GROUP_BITS, group_of, init_records
 
-# bat_2_avg_cell_temp is not logged by the portal; it is kept as an explicitly all-missing column so absence is documented
-CANON = list(RAW_TO_CANON.values()) + ["bat_2_avg_cell_temp"]
+# canonical battery columns; any that a given export lacks are added as all-missing so absence is documented
+CANON = list(dict.fromkeys(RAW_TO_CANON.values()))
 SIGNALS = [c for c in CANON if c != "time_min"]
 FLAG_BITS = {"row0_zero": 1, "init_unsettled": 2, "dropout_nan": 4, "out_of_range": 8,
-             "duplicate_time": 16, "nonmonotonic_time": 32, "after_gap": 64, "zero_sample_after_init": 128}
+             "duplicate_time": 16, "nonmonotonic_time": 32, "after_gap": 64, "zero_sample_after_init": 128,
+             "sentinel_value": 256}
 
 
-def iter_flights(path: Path):
-    """Yield one DataFrame per flight from the combined raw parquet (sorted by flight_id)."""
+def iter_flights(path: Path, columns: list[str] | None = None):
+    """Yield one DataFrame per flight from a combined parquet (sorted by flight_id).
+    `columns` limits what is read (missing names are ignored)."""
     pf = pq.ParquetFile(path)
+    if columns is not None:
+        names = set(pf.schema_arrow.names)
+        columns = list(dict.fromkeys(["flight_id"] + [c for c in columns if c in names]))
     carry = None
     for i in range(pf.num_row_groups):
-        d = pf.read_row_group(i).to_pandas()
+        d = pf.read_row_group(i, columns=columns).to_pandas()
         if carry is not None:
             d = pd.concat([carry, d], ignore_index=True)
             carry = None
@@ -62,7 +67,9 @@ def _runs(label: np.ndarray):
 def segment_activity(t, current, cfg) -> tuple[np.ndarray, np.ndarray]:
     thr = cfg["segmentation"]["active_current_a"]
     sign = cfg["charge_sign"]
-    sm = pd.Series(current).rolling(25, center=True, min_periods=5).median().to_numpy()
+    med_dt = np.nanmedian(np.diff(t)) if len(t) > 2 else np.nan
+    win = max(5, int(cfg["segmentation"].get("smooth_s", 30) / 60.0 / med_dt)) if np.isfinite(med_dt) and med_dt > 0 else 25
+    sm = pd.Series(current).rolling(win, center=True, min_periods=3).median().to_numpy()
     lab = np.where(sm * sign > thr, 1, np.where(-sm * sign > thr, 2, 0))  # 1 charge, 2 discharge
     min_n = max(1, int(cfg["segmentation"]["min_segment_min"] / max(np.nanmedian(np.diff(t)), 1e-6)))
     for _ in range(2):  # merge too-short runs into the previous run
@@ -110,6 +117,8 @@ def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list
             lo, hi = b["cell_volt_mv"]
         elif "temp" in c:
             lo, hi = b["temp_c"]
+        elif c.endswith("_voltage"):
+            lo, hi = b.get("pack_voltage_v", [250, 420])
         elif c.endswith("current"):
             lo, hi = -b["abs_current_a"][1], b["abs_current_a"][1]
         else:
@@ -117,6 +126,13 @@ def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list
         bad = np.isfinite(x) & ((x < lo) | (x > hi))
         oor |= bad
     oor &= (flags & FLAG_BITS["row0_zero"]) == 0  # the all-zero start row is reported as row0_zero, not as out-of-range
+    sent = np.zeros(n, bool)
+    for c in d.columns:
+        if c in ("flight_id", "row_in_file") or not pd.api.types.is_numeric_dtype(d[c]):
+            continue
+        for v in cfg.get("sentinel_values", []):
+            sent |= (d[c].to_numpy() == v)
+    flags[sent] |= FLAG_BITS["sentinel_value"]
     flags[oor] |= FLAG_BITS["out_of_range"]
     flags[np.isfinite(dt) & (dt == 0)] |= FLAG_BITS["duplicate_time"]
     flags[np.isfinite(dt) & (dt < 0)] |= FLAG_BITS["nonmonotonic_time"]
@@ -144,6 +160,11 @@ def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list
     seg_id, seg_type = segment_activity(t, cur, cfg) if n >= 5 else (np.zeros(n, np.int32), np.array(["rest"] * n))
 
     d["time_s"] = t * 60.0
+    thr = cfg.get("avionics_valid_acc_norm", 0.5)
+    d["avionics_valid"] = (pd.to_numeric(d["acc_norm"], errors="coerce") > thr).to_numpy() if "acc_norm" in d else False
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pv = [d[f"bat_{b}_voltage"].to_numpy(float) / (0.5 * (d[f"bat_{b}_min_cell_volt"].to_numpy(float) +
+              d[f"bat_{b}_max_cell_volt"].to_numpy(float)) / 1000.0) for b in (1, 2)]
     d["dt_min"] = dt
     for c in ("bat_1_min_cell_volt", "bat_1_max_cell_volt", "bat_2_min_cell_volt", "bat_2_max_cell_volt"):
         d[c.replace("volt", "volt_v")] = d[c] / 1000.0
@@ -162,6 +183,10 @@ def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list
               n_init_unsettled=int(((flags & FLAG_BITS["init_unsettled"]) > 0).sum()),
               n_out_of_range=int(((flags & FLAG_BITS["out_of_range"]) > 0).sum()),
               n_zero_sample_after_init=int(((flags & FLAG_BITS["zero_sample_after_init"]) > 0).sum()),
+              n_sentinel=int(((flags & FLAG_BITS["sentinel_value"]) > 0).sum()),
+              frac_avionics_valid=float(np.mean(d["avionics_valid"])) if n else np.nan,
+              series_ratio_b1=float(np.nanmedian(pv[0][(pv[0] > 50) & (pv[0] < 200)])) if n and ((pv[0] > 50) & (pv[0] < 200)).any() else np.nan,
+              series_ratio_b2=float(np.nanmedian(pv[1][(pv[1] > 50) & (pv[1] < 200)])) if n and ((pv[1] > 50) & (pv[1] < 200)).any() else np.nan,
               start_state=recs[0]["start_state"] if recs else "unknown",
               frac_charge=float((seg_type == "charge").mean()) if n else np.nan,
               frac_discharge=float((seg_type == "discharge").mean()) if n else np.nan,

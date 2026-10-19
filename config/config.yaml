@@ -31,21 +31,29 @@ paths:
   data_dir: data
   outputs_dir: outputs
 
-units:                     # inferred from magnitudes; the portal does not document them
-  cell_voltage: mV
-  current: A               # negative = charging (validated in earlier project work)
+units:                     # inferred from magnitudes (portal does not document them); checked in the QC report
+  pack_voltage: V          # 330-402 V
+  cell_voltage: mV         # 3400-4200 mV
+  current: A               # negative = charging (confirmed on charging sessions)
   soc: percent
   soh: percent
-  temperature: degC
+  temperature: degC        # integer resolution
+  oat: degC
+  pressure_alt: m          # assumed (values ~290 at the home airfield)
+  ias: unknown             # magnitude checked in QC
+  motor_power: kW
   time: minutes
 charge_sign: -1            # sign of current during charging
-n_series_cells: null       # set only after verifying pack topology; enables kW / kWh estimates
+n_series_cells: 96         # pack V / cell V ~ 96 and the BMS lists 96 cells; re-checked per session in QC
+avionics_valid_acc_norm: 0.5   # avionics block counts as alive when ACC_NORM > this (g); otherwise its zeros are "not logged"
+sentinel_values: [65535]   # uint16 "invalid" markers (e.g. motor rpm); flagged, not removed
 nominal_cell_voltage_v: 3.6
 
 screening_bounds:          # screening limits, NOT physical limits; used only to FLAG values
   soc: [0, 100]
   soh: [0, 100]
   cell_volt_mv: [2500, 4300]
+  pack_voltage_v: [250, 420]
   temp_c: [-40, 80]
   abs_current_a: [0, 400]
 
@@ -60,6 +68,7 @@ quality:
 segmentation:
   active_current_a: 2.0
   min_segment_min: 1.0
+  smooth_s: 30            # rolling-median window for the activity segmentation (seconds)
 
 analysis:
   soc_window: [20, 80]

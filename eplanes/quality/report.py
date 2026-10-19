@@ -179,9 +179,43 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
                     f"{int((init.cls=='load_onset').sum())} load_onset (treated as physical, NOT flagged), "
                     f"{int(init.extended_settling.sum()) if 'extended_settling' in init else 'n/a'} show settling beyond the first 2 samples. "
                     f"Median settle time of flagged records = {init[init.settle_idx>0].settle_min.median():.2f} min.")
-    limits.append("Cause of start-up artefacts cannot be proven from logged data: patterns are reported as 'consistent with' "
-                  "logger zero-fill, resampling-bin averaging with a zero sample, or sensor/filter warm-up. Confirming BMS-side "
-                  "initialisation needs Pipistrel documentation or raw (unresampled) logs.")
+    # 7b start-up evidence from the BMS files (independent stream at 5 Hz) ------------------
+    from ..build.bms import extract_bms_all
+    bms = extract_bms_all(settings, log=lambda *a: None)
+    if len(bms):
+        ev = pd.DataFrame([dict(evidence=k, frac_sessions=float(bms[k].mean()), n=int(bms[k].notna().sum()))
+                           for k in ("main_first_row_all_zero", "first_zero_temp", "first_zero_voltage", "first_zero_soc",
+                                     "first_zero_soh", "first_zero_percell") if k in bms])
+        ev.to_csv(qdir / "qc_startup_bms_evidence.csv", index=False)
+        e = dict(zip(ev.evidence, ev.frac_sessions))
+        findings.append("Start-up evidence across streams: main-log first row all zero in "
+                        f"{e.get('main_first_row_all_zero', float('nan')):.0%} of sessions; in the BMS files the first sample has zero "
+                        f"temperatures in {e.get('first_zero_temp', float('nan')):.0%}, zero pack voltage in "
+                        f"{e.get('first_zero_voltage', float('nan')):.0%} and zero SOC in {e.get('first_zero_soc', float('nan')):.0%}. "
+                        "A zero confined to the temperature channels while voltage/SOC are valid is consistent with temperature "
+                        "data not yet received at logger start, rather than with a sensor or BMS warm-up transient.")
+        limits.append("The physical cause of zero first samples is inferred from cross-stream patterns, not documented by Pipistrel.")
+    else:
+        limits.append("Cause of start-up artefacts cannot be proven from logged data (no BMS files available): patterns are "
+                      "reported as 'consistent with' logger zero-fill, resampling, or warm-up.")
+
+    # 7c avionics block, invalid-value markers, pack topology --------------------------------
+    av2 = f.groupby("aircraft_label").agg(sessions=("flight_id", "size"),
+                                          sessions_with_avionics=("frac_avionics_valid", lambda x: int((x > 0.5).sum())),
+                                          sentinel_samples=("n_sentinel", "sum"),
+                                          series_ratio_b1_median=("series_ratio_b1", "median"),
+                                          series_ratio_b2_median=("series_ratio_b2", "median")).reset_index()
+    av2.to_csv(qdir / "qc_avionics_sentinels_topology.csv", index=False)
+    by_type = f.groupby("flight_type").frac_avionics_valid.apply(lambda x: float((x > 0.5).mean())).to_dict()
+    findings.append("Avionics block (OAT, pressure altitude, IAS, GPS, attitude) is alive (ACC_NORM > "
+                    f"{cfg.get('avionics_valid_acc_norm', 0.5)} g) in: " + ", ".join(f"{k} {v:.0%}" for k, v in by_type.items()) +
+                    " of sessions; when it is off all its channels read exactly 0 and are treated as not logged.")
+    sr = pd.concat([f.series_ratio_b1, f.series_ratio_b2]).dropna()
+    if len(sr):
+        findings.append(f"Pack topology check: pack voltage / mean cell voltage has median {sr.median():.2f} "
+                        f"(IQR {sr.quantile(.25):.2f}-{sr.quantile(.75):.2f}) across sessions, consistent with "
+                        f"{settings.raw.get('n_series_cells')} cells in series.")
+    findings.append(f"Invalid-value markers (65535): {int(f.n_sentinel.sum()):,} samples flagged (e.g. motor rpm); not removed.")
 
     # 8 usability matrix ------------------------------------------------------------
     minr = cfg["quality"]["min_flight_rows"]

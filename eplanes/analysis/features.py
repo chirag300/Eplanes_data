@@ -87,9 +87,13 @@ def capacity_window(t, soc, cur, direction, cfg, max_dt):
         return np.nan, "too_few_samples", 0
     t, soc, cur = t[ok], soc[ok], cur[ok]
     s = soc * direction
+    # SOC is integer and sample-and-hold at 10 Hz: search monotone passes on the change points only
+    chg = np.r_[0, np.where(np.diff(s) != 0)[0] + 1]
+    ends = np.r_[chg[1:] - 1, len(s) - 1]
     best = None
     n_pass = 0
-    for a, b in monotone_runs(s, tol):
+    for ra, rb in monotone_runs(s[chg], tol):
+        a, b = chg[ra], ends[rb]
         sl = slice(a, b + 1)
         m = (soc[sl] >= lo) & (soc[sl] <= hi)
         if m.sum() < 25:
@@ -168,6 +172,49 @@ def charge_phase_stats(t, cur_abs, vmax, med_dt):
     return out
 
 
+def flight_state(x: pd.DataFrame, t: np.ndarray, med_dt: float, cfg: dict) -> dict:
+    """Ambient temperature and flight phases from the avionics block (only where it is alive: ACC_NORM ~ 1 g).
+    Phases: ground (below 30 m above the session's ground level), climb (smoothed vertical rate > +1 m/s),
+    descent (< -1 m/s), cruise (airborne otherwise). Altitude is assumed to be in metres."""
+    out = dict(avionics_frac=0.0, oat_c_median=np.nan, oat_c_min=np.nan, oat_c_max=np.nan, airborne_min=0.0,
+               climb_min=0.0, cruise_min=0.0, descent_min=0.0, alt_gain_m=np.nan, ias_max=np.nan, has_flight_state=False)
+    if "avionics_valid" not in x or not np.isfinite(med_dt):
+        return out
+    av = x["avionics_valid"].to_numpy().astype(bool)
+    out["avionics_frac"] = float(av.mean())
+    if av.sum() < max(20, int(0.5 / med_dt)):
+        return out
+    if "oat" in x:
+        oat = pd.to_numeric(x["oat"], errors="coerce").to_numpy(float)[av]
+        if np.isfinite(oat).any():
+            out.update(oat_c_median=float(np.nanmedian(oat)), oat_c_min=float(np.nanmin(oat)), oat_c_max=float(np.nanmax(oat)))
+    if "ias" in x:
+        out["ias_max"] = float(np.nanmax(pd.to_numeric(x["ias"], errors="coerce").to_numpy(float)[av]))
+    if "pressure_alt" in x:
+        alt = pd.to_numeric(x["pressure_alt"], errors="coerce").to_numpy(float)
+        alt = np.where(av, alt, np.nan)
+        if np.isfinite(alt).sum() > 50:
+            ground = np.nanpercentile(alt, 5)
+            agl = alt - ground
+            k = max(3, int(10 / 60 / med_dt))  # 10 s smoothing
+            sm = pd.Series(agl).rolling(k, center=True, min_periods=2).median().to_numpy()
+            rate = np.gradient(sm, t * 60.0)  # m/s
+            air = sm > 30
+            out["alt_gain_m"] = float(np.nanmax(agl))
+            out["airborne_min"] = float(air.sum() * med_dt)
+            out["climb_min"] = float((air & (rate > 1)).sum() * med_dt)
+            out["descent_min"] = float((air & (rate < -1)).sum() * med_dt)
+            out["cruise_min"] = float((air & (np.abs(rate) <= 1)).sum() * med_dt)
+            out["has_flight_state"] = bool(out["airborne_min"] > 1)
+    return out
+
+
+FEATURE_COLS = (["time_min", "quality_flag", "init_unsettled_groups", "segment_type", "avionics_valid"] +
+                [f"bat_{b}_{s}" for b in (1, 2) for s in ("current", "soc", "soh", "min_cell_volt", "max_cell_volt",
+                                                           "max_cell_temp", "min_cell_temp", "avg_cell_temp", "voltage")] +
+                ["oat", "pressure_alt", "ias", "acc_norm", "motor_power"])
+
+
 def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_current_a: float | None = None,
                    time_rule: str = "logged") -> list[dict]:
     """One dict per (flight, battery)."""
@@ -230,13 +277,24 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
         r["frac_discharge"] = float((st == "discharge").mean())
         n_ser = cfg.get("n_series_cells")
         vmean = 0.5 * (vmin + vmax) / 1000.0
-        if n_ser:
-            p = dis * vmean * n_ser / 1000.0  # kW
-            r["power_peak_kw"] = float(np.nanmax(p)) if np.isfinite(p).any() else np.nan
-            r["energy_discharged_kwh"] = _integrate(t, np.clip(p, 0, None), max_dt)
+        vpack = x[f"bat_{b}_voltage"].to_numpy(float) if f"bat_{b}_voltage" in x else np.full(len(x), np.nan)
+        vpack = np.where(vpack > 50, vpack, np.nan)  # zeros = not yet logged
+        if np.isfinite(vpack).any():
+            r["power_source"] = "pack voltage x current"
+        elif n_ser:
+            vpack = vmean * n_ser
+            r["power_source"] = f"mean cell voltage x {n_ser} x current"
         else:
-            r["power_peak_kw"] = np.nan
-            r["energy_discharged_kwh"] = np.nan
+            r["power_source"] = "unavailable"
+        p = dis * vpack / 1000.0  # kW, positive = discharge
+        r["power_peak_kw"] = float(np.nanmax(p)) if np.isfinite(p).any() else np.nan
+        r["power_mean_discharge_kw"] = float(np.nanmean(p[p > 0])) if np.isfinite(p).any() and (p > 0).any() else np.nan
+        r["energy_discharged_kwh"] = _integrate(t, np.clip(p, 0, None), max_dt)
+        r["energy_charged_kwh"] = _integrate(t, np.clip(-p, 0, None), max_dt)
+        r["v_pack_start"] = float(vpack[np.isfinite(vpack)][0]) if np.isfinite(vpack).any() else np.nan
+        r["v_pack_min"] = float(np.nanmin(vpack)) if np.isfinite(vpack).any() else np.nan
+        r["temp_min_cell_min_c"] = float(np.nanmin(x[f"bat_{b}_min_cell_temp"])) if f"bat_{b}_min_cell_temp" in x and x[f"bat_{b}_min_cell_temp"].notna().any() else np.nan
+        r.update(flight_state(x, t, med_dt, cfg))
         # rate-weighted power index (per-cell W) always available
         pi = np.clip(dis, 0, None) * vmean
         r["power_index_peak_w_per_cell"] = float(np.nanmax(pi)) if np.isfinite(pi).any() else np.nan
@@ -246,6 +304,9 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
         r.update(implied_capacity_ah=q, capacity_reason=why, capacity_n_passes=npass)
         r0, nr0 = r0_proxy(t, 0.5 * (vmin + vmax), cur, soc, cfg, med_dt)
         r.update(r0_proxy_mohm_cell=r0, r0_n_windows=nr0)
+        if np.isfinite(vpack).any():
+            r0p, nr0p = r0_proxy(t, vpack * 1000.0, cur, soc, cfg, med_dt)  # mV/A = mOhm on the pack
+            r.update(r0_pack_mohm=r0p, r0_pack_n_windows=nr0p)
         # charging phases
         cm = (st == "charge")
         if cm.sum() > 100:
@@ -256,7 +317,7 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
             r["charge_soc_end"] = float(soc[cm][np.isfinite(soc[cm])][-1]) if np.isfinite(soc[cm]).any() else np.nan
             r["charge_i_mean_a"] = float(np.nanmean(np.abs(cur[cm])))
             r["charge_i_peak_a"] = float(np.nanmax(np.abs(cur[cm])))
-            sm_i = pd.Series(np.abs(cur[cm])).rolling(25, center=True, min_periods=5).median()
+            sm_i = pd.Series(np.abs(cur[cm])).rolling(max(5, int(0.5 / med_dt)), center=True, min_periods=3).median()
             vmid_c = 0.5 * (vmin[cm] + vmax[cm])
             r["dqdv_current_cv"] = float(sm_i.std() / sm_i.mean()) if sm_i.mean() > 0 else np.nan
             r["dqdv_n_vbins"] = int(len(np.unique(np.round(vmid_c[np.isfinite(vmid_c)] / 10.0))))
@@ -269,7 +330,7 @@ def extract_flight(d: pd.DataFrame, cfg: dict, rule: str = DEFAULT_RULE, seg_cur
 def extract_all(settings, rule: str = DEFAULT_RULE, seg_current_a=None, flight_ids=None, time_rule: str = "logged") -> pd.DataFrame:
     path = settings.data_dir / "processed" / "analysis_ready_timeseries.parquet"
     rows = []
-    for g in iter_flights(path):
+    for g in iter_flights(path, FEATURE_COLS):
         if flight_ids is not None and int(g["flight_id"].iloc[0]) not in flight_ids:
             continue
         rows.extend(extract_flight(g, settings.raw, rule, seg_current_a, time_rule))

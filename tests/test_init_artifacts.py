@@ -43,3 +43,10 @@ def test_slow_relaxation_is_monotone_settling():
     x = 3600 - 40 * np.exp(-t / 0.15) + np.random.default_rng(3).normal(0, 0.3, len(t))
     r = settle_info(t, x, CQ, "rest_start", "bat_1_min_cell_volt")
     assert r["cls"] == "monotone_settling" and r["settle_idx"] > 5
+
+
+def test_on_grid_integer_values_are_not_bin_average():
+    x = np.full(len(t), 21.0)
+    x[0], x[1] = 0.0, 18.0          # 18/21 = 6/7 but on the 1-degree grid
+    r = settle_info(t, x, CQ, "rest_start", "bat_1_max_cell_temp")
+    assert r["cls"] != "bin_avg_zero"

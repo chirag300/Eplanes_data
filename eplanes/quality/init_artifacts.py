@@ -102,8 +102,12 @@ def settle_info(t: np.ndarray, x: np.ndarray, cfg_q: dict, state: str, signal: s
     if nonzero_ref:
         for i in range(1, min(7, len(x))):
             r = x[i] / ref
+            # averaging a zero into a bin produces a value OFF the sensor's resolution grid (e.g. 10.667 for an
+            # integer-degree sensor); an on-grid value (18 vs 21) is ordinary signal, not bin contamination
+            grid = res if res > 0 else 0.1  # constant signal: fall back to the 0.1 logging precision
+            off_grid = abs(x[i] / grid - round(x[i] / grid)) > 0.05
             for k, f in FRACS.items():
-                if abs(r - f) < 0.015 and abs(x[i] - ref) > tol:
+                if abs(r - f) < 0.015 and abs(x[i] - ref) > tol and off_grid:
                     frac_k = float(k)
         out["frac_k"] = frac_k
     if state == "load_start" and signal in ("current", "min_cell_volt", "max_cell_volt", "soc"):

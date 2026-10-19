@@ -50,3 +50,13 @@ def test_quality_then_analysis(s):
 def test_text_columns_kept_not_nulled(s):
     raw = pq.read_table(s.data_dir / "raw_combined" / "combined_raw_timeseries.parquet", columns=["timestamp"]).to_pandas()
     assert raw["timestamp"].notna().all()
+
+
+def test_bms_reset_detection_matches_planted(s):
+    import pandas as pd
+    from eplanes.build.bms import extract_bms_all
+    b = extract_bms_all(s, log=lambda *a: None)
+    m = pd.read_csv(s.data_dir / "raw" / "manifest.csv")[["flight_id", "synthetic_reset"]]
+    x = b.merge(m, on="flight_id")
+    assert (x.uniform_cells.astype(bool) == x.synthetic_reset.astype(bool)).all()
+    assert x.first_zero_temp.all() and not x.first_zero_voltage.any()

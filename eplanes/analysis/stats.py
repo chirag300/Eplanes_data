@@ -193,6 +193,40 @@ def run_stats(settings: Settings, rule="settle", log=print) -> pd.DataFrame:
             _result(rows, f"H7_artifact_by_start_state_{sig}", "H7", f"artefact rate equal for rest and load starts ({sig})", "differs", "Fisher exact", "flight",
                     dict(stat=float(odds), p=float(p), effect_name="odds ratio", effect=float(odds), n=int(tab.sum())))
 
+    # H4b cell temperature rise over ambient vs mean current (sessions with OAT)
+    if "oat_c_median" in ctx:
+        g4 = ctx[(ctx.E_thermal == True) & (ctx.battery == 1) & ctx.oat_c_median.notna() & (ctx.flight_type == "flight test")].copy()  # noqa: E712
+        g4["over_ambient"] = g4.temp_max_c - g4.oat_c_median
+        for ac, g in list(g4.groupby("aircraft_label")) + [("ALL", g4)]:
+            x = g[["i_mean_abs_a", "over_ambient"]].dropna()
+            if len(x) >= MIN_N:
+                rho, p = stats.spearmanr(x.i_mean_abs_a, x.over_ambient)
+                _result(rows, f"H4b_over_ambient_vs_current_{ac}", "H4", f"no monotone association between mean current and cell-over-ambient temperature ({ac})",
+                        "association", "Spearman", "flight test (battery 1, OAT logged)",
+                        dict(stat=float(rho), p=float(p), effect_name="rho", effect=float(rho), n=len(x)))
+
+    # H9 reported-SOH increases coincide with the BMS entering a uniform-cell (reset-like) state
+    try:
+        from .eda import bms_context
+        bb = bms_context(settings, ctx)
+    except Exception:  # noqa: BLE001
+        bb = pd.DataFrame()
+    if len(bb) and "enter_uniform" in bb and "d_soh" in bb:
+        ev = bb.dropna(subset=["d_soh"])
+        inc = ev.d_soh >= 2
+        tab = np.array([[int((inc & ev.enter_uniform).sum()), int((inc & ~ev.enter_uniform).sum())],
+                        [int((~inc & ev.enter_uniform).sum()), int((~inc & ~ev.enter_uniform).sum())]])
+        if tab.sum() >= MIN_N and tab[0].sum() > 0 and tab[:, 0].sum() > 0:
+            odds, p = stats.fisher_exact(tab, alternative="greater")
+            _result(rows, "H9_soh_increase_vs_uniform_entry", "H9",
+                    "reported-SOH increases (>=2 points between consecutive sessions) are no more likely when the BMS enters a uniform-cell state",
+                    "more likely (one-sided)", "Fisher exact (one-sided)", "consecutive battery-session pair",
+                    dict(stat=float(odds), p=float(p), effect_name="odds ratio", effect=float(odds), n=int(tab.sum())),
+                    dict(note=f"table [[inc&entry, inc&no-entry],[no-inc&entry, no-inc&no-entry]] = {tab.tolist()}"))
+        else:
+            _result(rows, "H9_soh_increase_vs_uniform_entry", "H9", "", "", "Fisher exact", "battery-session pair", None,
+                    dict(note=f"not testable: table {tab.tolist()}"))
+
     # H8 data-quality problems concentrated by aircraft / type
     fl = pd.read_csv(settings.data_dir / "processed" / "flights_with_qc.csv")
     fl["has_gap"] = fl.n_gaps > 0
