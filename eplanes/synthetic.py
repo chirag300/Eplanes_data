@@ -122,6 +122,7 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
             if rng.random() < 0.03:  # logging gap
                 df = df.drop(index=range(300, 360)).reset_index(drop=True)
             soc = float(df["bat 1 soc"].iloc[-1])
+            df["TIMESTAMP"] = [(when + pd.Timedelta(minutes=float(x))).isoformat() for x in df["time(min)"]]
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
                 z.writestr(f"csv-{fid}.csv", df.to_csv(index=False))

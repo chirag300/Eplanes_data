@@ -31,6 +31,7 @@ def main(argv=None):
     ap.add_argument("--outputs-dir", default=None)
     ap.add_argument("--accounts", nargs="*", default=None, help="subset of accounts, e.g. fleet_A")
     ap.add_argument("--retry-failed", action="store_true")
+    ap.add_argument("--with-aux", action="store_true", help="build-raw: also convert BMS _1/_2 and _warns files to parquet (large)")
     ap.add_argument("--login-mode", choices=["auto", "requests", "selenium"], default=None,
                     help="override download.login_mode (selenium = real Chrome login, as in the notebooks)")
     ap.add_argument("--limit", type=int, default=None, help="download at most N new flights (testing)")
@@ -56,7 +57,7 @@ def main(argv=None):
     elif cmd == "download":
         from .acquisition.downloader import run_download
         run_download(s, a.accounts, a.retry_failed, a.limit)
-    steps = {"build-raw": lambda: __import__("eplanes.build.raw", fromlist=["x"]).build_raw(s),
+    steps = {"build-raw": lambda: __import__("eplanes.build.raw", fromlist=["x"]).build_raw(s, a.with_aux),
              "build-clean": lambda: __import__("eplanes.build.clean", fromlist=["x"]).build_clean(s),
              "quality": lambda: __import__("eplanes.quality.report", fromlist=["x"]).run_quality(s, a.external_flights),
              "analyze": lambda: __import__("eplanes.analysis.eda", fromlist=["x"]).run_eda(s, a.rule),

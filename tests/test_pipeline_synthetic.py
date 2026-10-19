@@ -45,3 +45,8 @@ def test_quality_then_analysis(s):
     assert {"p", "p_holm_family", "q_bh_global"} <= set(r.columns)
     caps = (s.outputs_dir / "figures" / "figure_captions.json").read_text()
     assert "A1_fleet_timeline" in caps
+
+
+def test_text_columns_kept_not_nulled(s):
+    raw = pq.read_table(s.data_dir / "raw_combined" / "combined_raw_timeseries.parquet", columns=["timestamp"]).to_pandas()
+    assert raw["timestamp"].notna().all()
