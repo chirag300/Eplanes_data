@@ -83,6 +83,29 @@ def segment_activity(t, current, cfg) -> tuple[np.ndarray, np.ndarray]:
     return seg_id, names[lab]
 
 
+def gps_clock(t_min: np.ndarray, ts, valid: np.ndarray) -> dict:
+    """TIMESTAMP is a time-of-day clock HHMMSS (checked on session 4576: 124400..131429 spans 1,829 s while
+    time(min) spans 1,828 s). Returns the clock reading at time_min = 0 and the clock-vs-logger slope."""
+    out = dict(gps_tod_start_s=np.nan, gps_clock_slope=np.nan, gps_n_ticks=0)
+    if ts is None:
+        return out
+    v = pd.to_numeric(pd.Series(ts), errors="coerce").to_numpy(float)
+    hh, mm, ss = np.floor(v / 10000), np.floor(v / 100) % 100, v % 100
+    ok = valid & np.isfinite(v) & (v > 0) & (hh < 24) & (mm < 60) & (ss < 60) & np.isfinite(t_min)
+    if ok.sum() < 30:
+        return out
+    tod = (hh * 3600 + mm * 60 + ss)[ok]
+    tl = t_min[ok] * 60.0
+    tod = np.where(tod < tod[0] - 43200, tod + 86400, tod)  # midnight wrap
+    first = np.r_[True, np.diff(tod) != 0]               # use the first sample of each clock tick
+    tod, tl = tod[first], tl[first]
+    if len(tod) < 10:
+        return out
+    slope = float(np.polyfit(tl, tod, 1)[0])
+    out.update(gps_tod_start_s=float(np.median(tod - tl)) % 86400, gps_clock_slope=slope, gps_n_ticks=int(len(tod)))
+    return out
+
+
 def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list[dict]]:
     cq = cfg["quality"]
     b = cfg["screening_bounds"]
@@ -192,6 +215,7 @@ def process_flight(g: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict, list
               frac_discharge=float((seg_type == "discharge").mean()) if n else np.nan,
               n_segments=int(seg_id.max() + 1) if n else 0,
               max_abs_current=float(np.nanmax(np.abs(cur))) if n and np.isfinite(cur).any() else np.nan,
+              **gps_clock(t, d["timestamp"].to_numpy() if "timestamp" in d else None, d["avionics_valid"].to_numpy().astype(bool)),
               content_hash=hashlib.sha256(np.round(d[CANON].to_numpy(float), 6).tobytes()).hexdigest() if n else "")
     for c in SIGNALS:
         x = d[c].to_numpy(float)

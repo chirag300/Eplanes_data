@@ -50,3 +50,12 @@ def test_on_grid_integer_values_are_not_bin_average():
     x[0], x[1] = 0.0, 18.0          # 18/21 = 6/7 but on the 1-degree grid
     r = settle_info(t, x, CQ, "rest_start", "bat_1_max_cell_temp")
     assert r["cls"] != "bin_avg_zero"
+
+
+def test_gps_clock_hhmmss():
+    from eplanes.build.clean import gps_clock
+    tm = np.arange(0, 30, 0.1 / 60)                    # 10 Hz for 30 min
+    sec = 12 * 3600 + 42 * 60 + 20 + np.floor(tm * 60)  # starts 12:42:20
+    ts = (sec // 3600) * 10000 + (sec % 3600) // 60 * 100 + sec % 60
+    r = gps_clock(tm, ts, np.ones(len(tm), bool))
+    assert abs(r["gps_tod_start_s"] - (12 * 3600 + 42 * 60 + 20)) <= 1 and abs(r["gps_clock_slope"] - 1) < 1e-3

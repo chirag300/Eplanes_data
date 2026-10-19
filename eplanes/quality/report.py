@@ -89,8 +89,29 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
                     f"{int((f.n_gaps > 0).sum())} flights contain logging gaps > {cfg['quality']['gap_factor']}x median dt; "
                     f"{int(f.n_nonmonotonic.sum())} non-monotonic and {int(f.n_duplicate_time.sum())} duplicate time samples.")
     ordered = f.dropna(subset=["start_datetime"]).sort_values(["aircraft_label", "start_datetime"])
-    limits.append("Portal timestamps give the session START (date and time of day) only; the time zone is not documented and "
-                  "within-session time is `time_min` from the start. Absolute within-session timestamps are derived, not logged.")
+    # GPS time-of-day clock vs portal start time -> time-zone offset and clock agreement
+    if "gps_tod_start_s" in f and f.gps_tod_start_s.notna().any():
+        g = f.dropna(subset=["gps_tod_start_s", "start_datetime"]).copy()
+        portal_tod = g.start_datetime.dt.hour * 3600 + g.start_datetime.dt.minute * 60
+        off = ((g.gps_tod_start_s - portal_tod + 43200) % 86400 - 43200) / 3600.0
+        g["offset_h"] = off
+        g["offset_h_rounded"] = (off * 2).round() / 2
+        g["month"] = g.start_datetime.dt.month
+        g[["flight_id", "aircraft_label", "start_datetime", "gps_tod_start_s", "offset_h", "offset_h_rounded",
+           "gps_clock_slope", "gps_n_ticks"]].to_csv(qdir / "qc_gps_clock_vs_portal.csv", index=False)
+        vc = g.groupby("aircraft_label").offset_h_rounded.agg(lambda x: ", ".join(f"{k:+g} h: {v}" for k, v in x.value_counts().head(3).items()))
+        drift_ppm = (g.gps_clock_slope - 1) * 1e6
+        findings.append(f"Clocks: {len(g)} sessions carry the avionics time-of-day clock (TIMESTAMP, HHMMSS). Offset of that clock from the "
+                        "portal start time (rounded to 0.5 h) by aircraft -> " + "; ".join(f"{k}: {v}" for k, v in vc.items()) +
+                        f". Logger vs GPS clock rate differs by median {drift_ppm.median():.0f} ppm (IQR {drift_ppm.quantile(.25):.0f} to "
+                        f"{drift_ppm.quantile(.75):.0f}). A constant offset that switches by 1 h between summer and winter would indicate "
+                        "UTC avionics time and local portal time; see qc_gps_clock_vs_portal.csv.")
+        f = f.merge(g[["flight_id", "offset_h_rounded"]], on="flight_id", how="left")
+        limits.append("Portal start times are minute-resolution local times of undocumented zone; absolute times are cross-checked against "
+                      "the avionics clock only for sessions where the avionics are alive (not charging).")
+    else:
+        limits.append("Portal timestamps give the session START (date and time of day) only; the time zone is not documented and "
+                      "within-session time is `time_min` from the start.")
 
     # 3 feature availability --------------------------------------------------------
     av = []

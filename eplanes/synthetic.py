@@ -106,7 +106,8 @@ def make_synthetic(out_dir: str | Path, flights_per_aircraft: int = 40, seed: in
             main["PRESSURE_ALT"] = alt if avion else 0.0
             main["OAT"] = np.round(oat) if avion else 0.0
             main["ACC_NORM"] = (1.0 + rng.normal(0, 0.003, n)) if avion else 0.0
-            main["TIMESTAMP"] = (120000 + np.floor(t * 60)).astype(int) if avion else 0
+            sec = (when.hour + 4) * 3600 + when.minute * 60 + np.floor(t * 60)  # UTC = local + 4 h (EDT)
+            main["TIMESTAMP"] = ((sec // 3600) % 24 * 10000 + (sec % 3600) // 60 * 100 + sec % 60).astype(int) if avion else 0
             df = pd.DataFrame(main)
             df.iloc[0, 2:] = 0.0  # all-zero first row (time columns aside)
             if rng.random() < 0.03:
