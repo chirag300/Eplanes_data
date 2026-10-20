@@ -193,9 +193,15 @@ def export_web(settings: Settings, rule: str = DEFAULT_RULE, resolution_s: float
         fid = int(g["flight_id"].iloc[0])
         x = apply_rule(g, rule)
         av = x["avionics_valid"].to_numpy(bool) if "avionics_valid" in x else np.zeros(len(x), bool)
-        for c in list(AVIONICS_SERIES) + list(GPS_COLS):
+        for c in list(AVIONICS_SERIES) + list(GPS_COLS) + ["motor_power"]:
             if c in x:
-                x.loc[~av, c] = np.nan
+                if c != "motor_power":
+                    x.loc[~av, c] = np.nan
+                # avionics channels also open with exact zeros before they report (e.g. OAT 0 for the first samples)
+                v = x[c].to_numpy(float)
+                nz = np.flatnonzero(np.isfinite(v) & (v != 0))
+                if c != "motor_power" and len(nz) and nz[0] > 0:
+                    x.loc[x.index[: nz[0]], c] = np.nan
         if all(c in x for c in GPS_COLS):
             okf = geo.valid_fix_mask(x["lat"], x["lng"])
             x.loc[~okf, list(GPS_COLS)] = np.nan

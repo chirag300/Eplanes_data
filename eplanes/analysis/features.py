@@ -39,6 +39,10 @@ def apply_rule(d: pd.DataFrame, rule: str) -> pd.DataFrame:
                 nz = np.flatnonzero(np.isfinite(x) & (x != 0))
                 if len(nz) and nz[0] > 0:
                     d.loc[d.index[: nz[0]], c] = np.nan
+                elif not len(nz) and not c.endswith("_current"):
+                    # a channel that never reports a non-zero value is not reporting (SOC, SOH, voltage and
+                    # temperature cannot be exactly 0 in operation); current can legitimately be 0 throughout a rest
+                    d[c] = np.nan
         return d
     if rule == "row0":
         for c in SIGNALS:

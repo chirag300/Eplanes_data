@@ -24,3 +24,7 @@ venv/
 *.egg-info/
 chromedriver*
 .DS_Store
+
+# manuscript drafts and figures contain unpublished results: kept out of the public repository
+paper/*
+!paper/make_figures.py

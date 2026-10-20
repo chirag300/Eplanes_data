@@ -20,6 +20,8 @@ export async function renderOverview(app) {
   const homeNames = homes.map((c) => (airports.find((a) => a.code === c) || {}).name || c);
 
   // ---- hero: moving map + instrument strip
+  const bases = [...new Set(AIRCRAFT_ORDER.map((l) => (aircraft.find((a) => a.label === l) || {}).home_airfield).filter(Boolean))];
+  const baseSwitch = h("div", { class: "chips", role: "group", "aria-label": "Show operating base", style: { marginTop: "8px" } });
   const mapEl = h("div", { class: "map", role: "img", "aria-label": `Map of ${tracks.length} recorded GPS tracks` });
   const hero = h("section", { class: "hero" },
     mapEl,
@@ -30,18 +32,19 @@ export async function renderOverview(app) {
       h("div", { class: "actions" },
         h("a", { class: "btn primary", href: "#/flights" }, "Explore flights"),
         h("a", { class: "btn", href: "#/dataset" }, icon("download"), "Get the dataset"))),
-    h("div", { class: "map-legend", "aria-hidden": "true" },
+    h("div", { class: "map-legend" },
       h("div", { class: "row" }, h("span", { class: "sw" }), `${fmt.int(tracks.length)} GPS tracks`),
-      h("div", { class: "row" }, h("span", { class: "sw ring" }), "Airfield matched from GPS")),
+      h("div", { class: "row" }, h("span", { class: "sw ring" }), "Airfield matched from GPS"),
+      baseSwitch),
     h("div", { class: "instruments" },
       readout(fmt.int(sessions.length), "Sessions recorded"),
-      readout(fmt.int(flights.length), "Flight tests"),
+      readout(fmt.int(flights.length), "Flight sessions"),
       readout(fmt.int(charges.length), "Charging sessions"),
       readout(fmt.int(hours), "Hours of telemetry", "h"),
       readout(first ? `${first.getUTCFullYear()}–${last.getUTCFullYear()}` : "–", `Collection, ${fmt.int((last - first) / 864e5)} days`),
       readout(latest ? fmt.date(latest.start) : "–", latest ? `Latest: ${typeLabel(latest.session_type).toLowerCase()}, ${latest.aircraft_label}` : "Latest session")));
   app.append(hero);
-  drawHeroMap(mapEl, tracks, airports);
+  drawHeroMap(mapEl, tracks, airports, bases, baseSwitch);
 
   const wrap = h("div", { class: "wrap" });
   app.append(wrap);
@@ -63,6 +66,12 @@ export async function renderOverview(app) {
   for (const ac of AIRCRAFT_ORDER) {
     const g = valid.filter((s) => s.aircraft_label === ac && s.b1_soh_median !== null).sort((a, b) => a.start - b.start);
     if (g.length < 3) continue;
+    if (g[g.length - 1].start - g[0].start < 7 * 864e5) {
+      sohGrid.append(h("div", { class: "panel" }, h("h3", {}, h("a", { href: `#/aircraft/${ac}`, style: { color: "inherit" } }, ac)),
+        h("p", { class: "sub" }, `${fmt.int(g.length)} sessions, all within ${fmt.int(Math.max(1, Math.ceil((g[g.length - 1].start - g[0].start) / 864e5)))} day(s) around ${fmt.date(g[0].start)}: too short a period for a trajectory.`),
+        h("p", {}, `Reported SOH: pack 1 ${fmt.int(g[0].b1_soh_median)}%, pack 2 ${fmt.int(g[0].b2_soh_median)}%.`)));
+      continue;
+    }
     const el = h("div", { class: "chart short" });
     sohGrid.append(h("div", { class: "panel" }, h("h3", {}, h("a", { href: `#/aircraft/${ac}`, style: { color: "inherit" } }, ac)),
       h("p", { class: "sub" }, `${fmt.int(g.length)} sessions, ${fmt.date(g[0].start)} – ${fmt.date(g[g.length - 1].start)}`), el));
@@ -83,7 +92,7 @@ export async function renderOverview(app) {
   for (const s of [...valid].sort((a, b) => b.start - a.start).slice(0, 7)) {
     latestList.append(h("a", { href: `#/flights/${s.flight_id}`, style: { display: "grid", gridTemplateColumns: "auto 1fr auto", gap: "10px", alignItems: "center", padding: "9px 0", borderTop: `1px solid ${css("--line")}`, color: "inherit", textDecoration: "none" } },
       icon(isFlight(s.session_type) ? "plane" : s.session_type === "charging" ? "bolt" : "ground"),
-      h("span", {}, h("b", {}, typeLabel(s.session_type)), " ", h("span", { class: "muted" }, `· ${s.aircraft_label} · ${fmt.dur(s.duration_min)}`)),
+      h("span", {}, h("b", {}, typeLabel(s.session_type)), " ", h("span", { class: "muted" }, `· ${s.aircraft_label} · ${s.download_status && s.download_status !== "ok" ? "listed, no data from the portal yet" : fmt.dur(s.duration_min)}`)),
       h("span", { class: "faint num" }, fmt.date(s.start))));
   }
   grid.append(latestList);
@@ -93,17 +102,40 @@ function readout(v, k, unit) {
   return h("div", { class: "readout" }, h("div", { class: "v" }, v, unit ? h("small", {}, unit) : null), h("div", { class: "k" }, k));
 }
 
-function drawHeroMap(el, tracks, airports) {
+export function shortName(ap) {
+  return (ap.name || ap.code).replace(/ (Regional |Municipal |International )?Airport$/i, "").replace(/^Region of /, "");
+}
+
+export function baseBounds(tracks, code, airports) {
+  const pts = tracks.filter((t) => t.dep === code || t.arr === code).flatMap((t) => t.coords);
+  const ap = airports.find((a) => a.code === code);
+  if (!pts.length) return ap ? [[ap.longitude_deg - 0.3, ap.latitude_deg - 0.2], [ap.longitude_deg + 0.3, ap.latitude_deg + 0.2]] : null;
+  const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(p * (arr.length - 1))))];
+  const xs = pts.map((p) => p[0]).sort((a, b) => a - b), ys = pts.map((p) => p[1]).sort((a, b) => a - b);
+  return [[q(xs, 0.02), q(ys, 0.02)], [q(xs, 0.98), q(ys, 0.98)]];
+}
+
+function drawHeroMap(el, tracks, airports, bases, switcher) {
   if (!tracks.length) { el.append(h("div", { class: "map-empty" }, "No GPS tracks in this dataset: the avionics block was off or positions could not be placed.")); return; }
   const map = createMap(el, { interactive: true });
-  if (!map) { canvasFallback(el, tracks, airports, { colorBy: "route" }); return; }
+  if (!map) { canvasFallback(el, tracks.filter((t) => !bases.length || t.dep === bases[0] || t.arr === bases[0]), airports, { colorBy: "route" }); return; }
   map.scrollZoom.disable();
+  const pad = () => ({ top: 50, bottom: 40, left: window.innerWidth > 820 ? 620 : 30, right: 40 });
+  const go = (code, animate) => {
+    const b = baseBounds(tracks, code, airports);
+    if (b) map.fitBounds(b, { padding: pad(), duration: animate ? 900 : 0, maxZoom: 11 });
+    switcher.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.code === code)));
+  };
+  for (const code of bases) {
+    const ap = airports.find((a) => a.code === code);
+    const btn = h("button", { class: "chip", type: "button", "data-code": code, title: ap ? ap.name : code }, ap ? `${shortName(ap)} (${code})` : code);
+    btn.addEventListener("click", () => go(code, true));
+    switcher.append(btn);
+  }
   map.on("load", () => {
     addTracks(map, tracks, { colorBy: "route", width: 1.3, opacity: 0.55 });
     addAirports(map, airports);
-    const home = airports.slice().sort((a, b) => b.fixes - a.fixes)[0];
-    const nearHome = home ? tracks.filter((t) => Math.abs(t.coords[0][1] - home.latitude_deg) < 1 && Math.abs(t.coords[0][0] - home.longitude_deg) < 1.5) : tracks;
-    fit(map, (nearHome.length ? nearHome : tracks).map((t) => t.coords), { top: 40, bottom: 120, left: window.innerWidth > 820 ? 620 : 30, right: 40 });
+    go(bases[0] || (airports[0] && airports[0].code), false);
     const pop = new window.maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
     hoverTracks(map, "tracks", (p) => { if (!p) pop.remove(); });
     map.on("mousemove", "tracks", (e) => {

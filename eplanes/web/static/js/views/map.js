@@ -1,9 +1,11 @@
 import * as api from "../api.js";
 import { addAirports, addTracks, canvasFallback, createMap, fit, highlight, hoverTracks } from "../map.js";
 import { acColor, acKey, AIRCRAFT_ORDER, chip, fmt, h, typeLabel } from "../ui.js";
+import { baseBounds, shortName } from "./overview.js";
 
 export async function renderMap(app, params) {
-  const [tracks, airports, sessions] = await Promise.all([api.get("tracks"), api.get("airports"), api.sessions()]);
+  const [tracks, airports, sessions, aircraft] = await Promise.all([api.get("tracks"), api.get("airports"), api.sessions(), api.get("aircraft")]);
+  const bases = [...new Set(AIRCRAFT_ORDER.map((l) => (aircraft.find((a) => a.label === l) || {}).home_airfield).filter(Boolean))];
   const byId = new Map(sessions.map((s) => [s.flight_id, s]));
   app.innerHTML = "";
   const acs = AIRCRAFT_ORDER.filter((a) => tracks.some((t) => t.aircraft_label === a));
@@ -16,11 +18,13 @@ export async function renderMap(app, params) {
     h("p", { class: "muted" }, `${fmt.int(tracks.length)} sessions carry a GPS track. The logger stores latitude and longitude without their signs; positions are placed by matching take-off and landing points to known airfields, and airfields are shown only where a fix lies within 3 km of one.`)));
 
   const count = h("span", { class: "active-filters" });
+  const baseChips = h("div", { class: "chips" });
   const fromIn = h("input", { type: "date", value: f.from, onchange: (e) => { f.from = e.target.value; draw(); } });
   const toIn = h("input", { type: "date", value: f.to, onchange: (e) => { f.to = e.target.value; draw(); } });
   wrap.append(h("div", { class: "filters" },
     h("div", { class: "field" }, "Aircraft", h("div", { class: "chips" }, acs.map((a) => chip(a, f.aircraft.includes(a), (on) => { f.aircraft = on ? [...f.aircraft, a] : f.aircraft.filter((x) => x !== a); draw(); }, acColor(a))))),
     h("div", { class: "field" }, "Date range (UTC)", h("div", { style: { display: "flex", gap: "6px", alignItems: "center" } }, fromIn, h("span", { class: "faint" }, "to"), toIn)),
+    h("div", { class: "field" }, "Go to base", baseChips),
     h("div", { class: "field" }, " ", count)));
 
   const grid = h("div", { class: "grid side", style: { marginTop: "16px" } });
@@ -78,10 +82,18 @@ export async function renderMap(app, params) {
     ready = true;
     draw();
     addAirports(map, airports);
-    const home = [...airports].sort((x, y) => y.fixes - x.fixes)[0];
-    const v = visible();
-    const near = home ? v.filter((t) => Math.abs(t.coords[0][1] - home.latitude_deg) < 1 && Math.abs(t.coords[0][0] - home.longitude_deg) < 1.5) : v;
-    fit(map, (near.length ? near : v).map((t) => t.coords), 40);
+    const go = (code, animate) => {
+      const b = baseBounds(tracks, code, airports);
+      if (b) map.fitBounds(b, { padding: 40, duration: animate ? 900 : 0, maxZoom: 11 });
+      baseChips.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.code === code)));
+    };
+    for (const code of bases) {
+      const ap = airports.find((a) => a.code === code);
+      const b = h("button", { class: "chip", type: "button", "data-code": code }, ap ? `${shortName(ap)} (${code})` : code);
+      b.addEventListener("click", () => go(code, true));
+      baseChips.append(b);
+    }
+    go(bases[0] || (airports[0] && airports[0].code), false);
     hoverTracks(map, "tracks", (p) => { if (p) show(p.flight_id); });
     map.on("click", "tracks", (e) => { const fid = e.features[0].properties.flight_id; highlight(map, fid); show(fid); });
   });

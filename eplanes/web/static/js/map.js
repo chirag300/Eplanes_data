@@ -3,23 +3,18 @@
 import { acColor, css, h } from "./ui.js";
 
 const CFG = window.EPLANES_CONFIG || {};
-const TILE = {
-  dark: CFG.tiles_dark || "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-  light: CFG.tiles_light || "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+// Basemap: OpenFreeMap vector styles - free, no API key or registration, commercial use allowed (https://openfreemap.org).
+// Override with map_style_dark / map_style_light in config.js (e.g. a self-hosted PMTiles style).
+const STYLE = {
+  dark: CFG.map_style_dark || "https://tiles.openfreemap.org/styles/dark",
+  light: CFG.map_style_light || "https://tiles.openfreemap.org/styles/positron",
 };
-const ATTRIB = CFG.tiles_attribution || '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>';
 
 function isLight() { return getComputedStyle(document.documentElement).colorScheme === "light"; }
 
-function style() {
-  return {
-    version: 8,
-    sources: { base: { type: "raster", tiles: [isLight() ? TILE.light : TILE.dark], tileSize: 256, attribution: ATTRIB, maxzoom: 18 } },
-    layers: [
-      { id: "bg", type: "background", paint: { "background-color": css("--panel-2") } },
-      { id: "base", type: "raster", source: "base", paint: { "raster-opacity": isLight() ? 0.9 : 0.85 } },
-    ],
-  };
+// Used when the basemap cannot be reached (offline, blocked): tracks and airfields still draw on a plain background.
+function plainStyle() {
+  return { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": css("--panel-2") } }] };
 }
 
 export function webglOk() {
@@ -35,9 +30,18 @@ export function bounds(coordsList) {
 
 export function createMap(el, { interactive = true, center = [-80.38, 43.46], zoom = 8 } = {}) {
   if (!window.maplibregl || !webglOk()) return null;
-  const map = new window.maplibregl.Map({ container: el, style: style(), center, zoom, interactive, attributionControl: { compact: true }, cooperativeGestures: false });
+  const map = new window.maplibregl.Map({ container: el, style: isLight() ? STYLE.light : STYLE.dark, center, zoom, interactive,
+    attributionControl: { compact: true }, cooperativeGestures: false });
   if (interactive) map.addControl(new window.maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
-  map.on("error", (e) => { if (e && e.sourceId === "base") return; /* tiles unreachable: keep drawing data layers */ });
+  let fellBack = false;
+  const fallBack = () => {
+    if (fellBack || map.isStyleLoaded()) return;
+    fellBack = true;
+    map.setStyle(plainStyle());
+    el.append(h("div", { class: "note", style: { position: "absolute", left: "10px", bottom: "6px", zIndex: 3 } }, "Basemap unavailable: showing tracks without the map background."));
+  };
+  map.on("error", (e) => { if (!map.isStyleLoaded()) fallBack(); });
+  setTimeout(fallBack, 15000);
   return map;
 }
 
