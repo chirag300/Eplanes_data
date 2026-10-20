@@ -28,3 +28,6 @@ chromedriver*
 # manuscript drafts and figures contain unpublished results: kept out of the public repository
 paper/*
 !paper/make_figures.py
+
+# Cloudflare wrangler local state
+.wrangler/
