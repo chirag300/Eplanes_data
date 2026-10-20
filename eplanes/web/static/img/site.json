@@ -1,0 +1,12 @@
+{
+  "_comment": "Images used by the site. Logos are shown only when the file exists in img/logos/ (official files only; see docs/WEBSITE.md). Photos may be local files or URLs; credit is always displayed.",
+  "logos": [
+    {"name": "University of Waterloo", "file": "img/logos/uwaterloo.png", "file_light": "img/logos/uwaterloo-light.png", "href": "https://uwaterloo.ca/"},
+    {"name": "Waterloo Institute for Sustainable Aeronautics (WISA)", "file": "img/logos/wisa.png", "file_light": "img/logos/wisa-light.png", "href": "https://uwaterloo.ca/sustainable-aeronautics/"},
+    {"name": "Region of Waterloo International Airport", "file": "img/logos/waterloo-airport.png", "file_light": "img/logos/waterloo-airport-light.png", "href": "https://www.flywaterloo.ca/"}
+  ],
+  "photos": {
+    "default": {"src": "https://uwaterloo.ca/news/sites/default/files/wisa-electro-plane_0.jpg", "local": "img/photos/velis-electro-waterloo.jpg",
+                "alt": "Pipistrel Velis Electro parked at the Region of Waterloo International Airport", "credit": "Photo: University of Waterloo"}
+  }
+}

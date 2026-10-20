@@ -5,8 +5,10 @@
 config/db_config.json
 cookies*.json
 # data (not authorised for public release until dataset owners confirm)
-data/
+/data/
 data_synthetic/
+# package reference data (public domain airport list) is tracked
+!eplanes/data/
 outputs/
 outputs_synthetic/
 *.zip

@@ -10,6 +10,10 @@
   sensitivity   cleaning / segmentation / timestamp sensitivity
   package       results ZIP (+ KEY_FINDINGS.md)
   all           build-raw -> build-clean -> quality -> analyze -> stats -> sensitivity -> package
+  export-web    compact website/paper bundle (sessions, 2 s traces, GPS tracks, SOH steps) + ZIP to upload
+  release       downloadable dataset release (raw ZIPs, clean 10 Hz, tables, docs, checksums, manifest)
+  web           run the Eplanes website locally (http://127.0.0.1:8000) on the web bundle
+  web-static    build a static snapshot of the website (no server needed, e.g. GitHub Pages)
   selftest      full pipeline on SYNTHETIC data in a temp directory (no network, no credentials)
 """
 from __future__ import annotations
@@ -29,7 +33,8 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message="(invalid val
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="eplanes", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["discover", "download", "build-raw", "build-clean", "quality", "analyze", "stats",
-                                        "sensitivity", "package", "all", "selftest"])
+                                        "sensitivity", "package", "all", "selftest",
+                                        "export-web", "release", "web", "web-static"])
     ap.add_argument("--config", default=None)
     ap.add_argument("--data-dir", default=None)
     ap.add_argument("--outputs-dir", default=None)
@@ -47,6 +52,14 @@ def main(argv=None):
                     choices=["build-raw", "build-clean", "quality", "analyze", "stats", "sensitivity", "package"],
                     help="with `all`: start at this step (earlier outputs are reused)")
     ap.add_argument("--rule", default="leadzero", help="cleaning rule for analyses: leadzero|none|row0|settle|fixed:<min>")
+    ap.add_argument("--resolution", type=float, default=2.0, help="export-web: trace resolution in seconds")
+    ap.add_argument("--version", dest="release_version", default="1.0.0", help="release: dataset version")
+    ap.add_argument("--no-raw", action="store_true", help="release: skip the original portal ZIPs")
+    ap.add_argument("--bundle", default=None, help="web / web-static: web bundle directory (default outputs/web_bundle)")
+    ap.add_argument("--release-dir", default=None, help="web: directory with the dataset release (downloads)")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--out", default=None, help="web-static: output directory")
     a = ap.parse_args(argv)
 
     s = load_settings(a.config)
@@ -58,6 +71,23 @@ def main(argv=None):
 
     if cmd == "selftest":
         return selftest()
+    if cmd == "export-web":
+        from .web_export import export_web
+        export_web(s, a.rule, a.resolution)
+        return 0
+    if cmd == "release":
+        from .web_export import build_release
+        build_release(s, a.release_version, a.rule, include_raw=not a.no_raw)
+        return 0
+    if cmd in ("web", "web-static"):
+        from .web.server import serve, build_static
+        bundle = Path(a.bundle or s.outputs_dir / "web_bundle")
+        rel = Path(a.release_dir) if a.release_dir else None
+        if cmd == "web":
+            serve(bundle, rel, a.host, a.port, settings=s)
+        else:
+            build_static(bundle, Path(a.out or s.outputs_dir / "web_static"), rel)
+        return 0
     if cmd == "discover":
         from .acquisition.downloader import run_discover
         run_discover(s, a.accounts)

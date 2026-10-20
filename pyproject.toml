@@ -12,6 +12,7 @@ dependencies = ["pandas>=2.1", "numpy>=1.26", "scipy>=1.11", "matplotlib>=3.8", 
 
 [project.optional-dependencies]
 browser = ["selenium>=4.15"]
+web = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev = ["pytest>=8"]
 
 [project.scripts]
@@ -19,3 +20,6 @@ eplanes = "eplanes.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["eplanes*"]
+
+[tool.setuptools.package-data]
+eplanes = ["data/*.csv.gz", "web/static/**/*"]
