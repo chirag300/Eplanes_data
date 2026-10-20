@@ -14,6 +14,8 @@
   release       downloadable dataset release (raw ZIPs, clean 10 Hz, tables, docs, checksums, manifest)
   web           run the Eplanes website locally (http://127.0.0.1:8000) on the web bundle
   web-static    build a static snapshot of the website (no server needed, e.g. GitHub Pages)
+  publish-site  build the static snapshot and push it to the site repository that Render deploys
+                (--site-repo URL; --refresh first downloads new sessions and re-runs the pipeline)
   selftest      full pipeline on SYNTHETIC data in a temp directory (no network, no credentials)
 """
 from __future__ import annotations
@@ -34,7 +36,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="eplanes", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["discover", "download", "build-raw", "build-clean", "quality", "analyze", "stats",
                                         "sensitivity", "package", "all", "selftest",
-                                        "export-web", "release", "web", "web-static"])
+                                        "export-web", "release", "web", "web-static", "publish-site"])
     ap.add_argument("--config", default=None)
     ap.add_argument("--data-dir", default=None)
     ap.add_argument("--outputs-dir", default=None)
@@ -62,6 +64,9 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="web-static: output directory")
     ap.add_argument("--downloads-url", default=None,
                     help="web-static: base URL where the release files are hosted (e.g. https://zenodo.org/records/<id>/files)")
+    ap.add_argument("--site-repo", default=None,
+                    help="publish-site: git URL of the site repository (or set EPLANES_SITE_REPO in .env)")
+    ap.add_argument("--refresh", action="store_true", help="publish-site: download new sessions and re-run the pipeline first")
     ap.add_argument("--copy-release", action="store_true", help="web-static: copy the release files into the site (small releases only)")
     a = ap.parse_args(argv)
 
@@ -81,6 +86,17 @@ def main(argv=None):
     if cmd == "release":
         from .web_export import build_release
         build_release(s, a.release_version, a.rule, include_raw=not a.no_raw)
+        return 0
+    if cmd == "publish-site":
+        import os
+        from .config import ENV_FILE
+        from .web.publish import publish_site
+        env = dict(l.split("=", 1) for l in ENV_FILE.read_text().splitlines() if "=" in l and not l.lstrip().startswith("#")) if ENV_FILE.exists() else {}
+        repo = a.site_repo or os.environ.get("EPLANES_SITE_REPO") or env.get("EPLANES_SITE_REPO", "").strip().strip("\"'")
+        if not repo:
+            raise SystemExit("publish-site needs --site-repo <git URL> (or EPLANES_SITE_REPO in .env)")
+        publish_site(s, repo, refresh=a.refresh, downloads_url=a.downloads_url,
+                     release=Path(a.release_dir) if a.release_dir else None)
         return 0
     if cmd in ("web", "web-static"):
         from .web.server import serve, build_static

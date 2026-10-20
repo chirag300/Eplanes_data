@@ -94,6 +94,34 @@ npx wrangler pages deploy outputs/web_static --project-name eplanes
 
 GitHub Pages: in a repository you choose for the site, upload the contents of `outputs/web_static/` to the branch or folder Pages serves. Alternatively, use the `actions/upload-pages-artifact` and `actions/deploy-pages` workflow. Keep the site in a separate repository or branch from the code if you want the code repository to stay data-free.
 
+## 5b. Render (chosen host): public static site with laptop-driven refresh
+
+The site is published as a static snapshot to a **private** GitHub repository, for example `eplanes-site`, and Render
+deploys that repository. Refresh runs on your computer, so the portal credentials and raw data never leave it.
+
+One-time setup:
+1. On GitHub, create an empty **private** repository `eplanes-site` (no README).
+2. Add `EPLANES_SITE_REPO=git@github.com:<you>/eplanes-site.git` to `.env`, or use the HTTPS URL.
+3. Publish once: `python -m eplanes publish-site`. This builds the snapshot, checks it for `.env` values, writes `render.yaml`, commits and pushes.
+4. In Render: **New -> Blueprint**, connect GitHub, choose `eplanes-site`, then **Apply**. Render reads `render.yaml` and creates a free static site, with a `*.onrender.com` URL.
+
+Every refresh after that:
+
+```bash
+python -m eplanes publish-site --refresh   # download new sessions -> all -> export-web -> snapshot -> push
+```
+
+Render redeploys automatically within a minute or two of the push. On the site, "Refresh data" loads the newest published snapshot.
+
+To refresh nightly, add a cron entry on your Mac (`crontab -e`). The Mac must be awake at that time:
+
+```
+30 2 * * * cd /path/to/Eplanes_data && .venv/bin/python -m eplanes publish-site --refresh >> outputs/publish.log 2>&1
+```
+
+A fully server-side refresh is possible but has costs: a paid Render service with a persistent disk, holding the raw data and the
+portal credentials. Use it only if the laptop route is not enough.
+
 ## 6. Maps (no API key)
 
 The basemap is **OpenFreeMap**:

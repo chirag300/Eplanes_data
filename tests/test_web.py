@@ -109,3 +109,17 @@ def test_static_snapshot_links_downloads_to_hosted_files(bundle, tmp_path):
     assert dl["files"] and all(f["url"].startswith("https://zenodo.org/records/123/files/") and f["url"].endswith("?download=1")
                                for f in dl["files"])
     assert not (site / "downloads").exists()  # nothing copied into the site
+
+
+def test_publish_site_pushes_snapshot_to_a_git_repo(bundle, tmp_path, monkeypatch):
+    import subprocess
+    from eplanes.web.publish import publish_site
+    s, out, rel = bundle
+    remote = tmp_path / "site.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    for k, v in (("GIT_AUTHOR_NAME", "t"), ("GIT_AUTHOR_EMAIL", "t@t"), ("GIT_COMMITTER_NAME", "t"), ("GIT_COMMITTER_EMAIL", "t@t")):
+        monkeypatch.setenv(k, v)
+    log = []
+    assert publish_site(s, str(remote), log=log.append)
+    files = subprocess.run(["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"], capture_output=True, text=True).stdout.split()
+    assert "render.yaml" in files and "index.html" in files and "data/status.json" in files
