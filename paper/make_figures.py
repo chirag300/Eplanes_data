@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # the eplanes package, when run as a script from the repo
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -35,7 +38,7 @@ plt.rcParams.update({
     "axes.edgecolor": INK2, "axes.labelcolor": INK, "text.color": INK, "xtick.color": INK2, "ytick.color": INK2,
     "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.5, "axes.spines.top": False, "axes.spines.right": False,
     "legend.frameon": False, "legend.fontsize": 7, "lines.linewidth": 1.2, "savefig.dpi": 300, "figure.dpi": 120,
-    "axes.titlelocation": "left",
+    "axes.titlelocation": "left", "pdf.fonttype": 42, "ps.fonttype": 42,
 })
 W1, W2 = 3.45, 7.1  # single / double column width (inches)
 
@@ -90,7 +93,54 @@ def load(bundle: Path):
     ac = json.loads((bundle / "aircraft.json").read_text())
     ap = pd.read_csv(bundle / "airports.csv") if (bundle / "airports.csv").exists() else pd.DataFrame()
     q = json.loads((bundle / "quality.json").read_text()) if (bundle / "quality.json").exists() else {}
+    s, p, st = fix_cross_aircraft(s, p, st)
     return s, p, st, man, ac, ap, q
+
+
+CROSS = {}
+
+
+def fix_cross_aircraft(s, p, st):
+    """Re-attribute logs listed under two aircraft in bundles exported before eplanes.quality.crossdup existed.
+
+    Those bundles kept the copy with the lowest flight_id. Identical sessions are recognised by an exact signature
+    (duration and pack-1 SOC and SOH values to 1e-5) and attributed by eplanes.quality.crossdup.resolve; the kept copy
+    inherits the usability flags of the copy that was kept before (same content, same usability)."""
+    if "cross_aircraft_duplicate" in s:
+        return s, p, st
+    from eplanes.quality.crossdup import resolve
+    sig_cols = ["duration_min", "b1_soc_start", "b1_soc_end", "b1_soh_median", "b2_soh_median"]
+    d = s.dropna(subset=sig_cols).copy()
+    d["sig"] = ["|".join(f"{v:.5f}" for v in row) for row in d[sig_cols].to_numpy(float)]
+    d["soh"] = d[["b1_soh_median", "b2_soh_median"]].mean(axis=1)
+    res = resolve(d.rename(columns={"start_utc": "start_datetime"}), key="sig", soh="soh")
+    s = s.copy()
+    s["cross_aircraft_duplicate"] = s.flight_id.isin(res.flight_id)
+    ucols = [c for c in s.columns if c.startswith("usable_") and c != "usable_exclusion_reason"]
+    pcols = [c for c in ("A_overview", "B_profiles", "C_soc_dod", "D_charging", "E_thermal", "F_soh", "G_capacity") if c in p]
+    p = p.copy()
+    for _, g in res.groupby("group"):
+        ids = list(g.flight_id)
+        was = s[s.flight_id.isin(ids) & ~s.is_duplicate_content.fillna(False)].flight_id.tolist()
+        keep = g[g.keep].flight_id.tolist()
+        src = was[0] if was else None
+        # snapshot the flags of the previously kept copy before any copy is changed
+        s_src = s.loc[s.flight_id == src, ucols].to_numpy() if src is not None else None
+        p_src = {b: p.loc[(p.flight_id == src) & (p.battery == b), pcols].to_numpy() for b in (1, 2)} if src is not None else None
+        for fid in ids:
+            m, mp = s.flight_id == fid, p.flight_id == fid
+            if fid in keep and src is not None and src != fid:
+                s.loc[m, ucols] = s_src
+                for b in (1, 2):
+                    p.loc[mp & (p.battery == b), pcols] = p_src[b]
+            if fid not in keep:
+                s.loc[m, ucols] = False
+                p.loc[mp, pcols] = False
+            s.loc[m, "is_duplicate_content"] = fid not in keep
+            p.loc[mp, "is_duplicate_content"] = fid not in keep
+        CROSS[int(g.group.iloc[0])] = {"ids": [f"{fid} ({ac})" for fid, ac in zip(g.flight_id, g.aircraft_label)],
+                                       "kept": keep, "previously_kept": was}
+    return s, p, st
 
 
 def series_for(bundle: Path, fids):
@@ -120,7 +170,7 @@ def fig_maps(o, s, bundle, ap):
     tr = pd.read_parquet(bundle / "series.parquet", columns=["flight_id", "lat", "lon"]).dropna()
     if tr.empty:
         return
-    tr = tr.merge(s[["flight_id", "aircraft_label", "dep_airport"]], on="flight_id")
+    tr = tr.merge(s.loc[~s.is_duplicate_content.fillna(False).astype(bool), ["flight_id", "aircraft_label", "dep_airport"]], on="flight_id")
     homes = s.dep_airport.value_counts()
     homes = [h for h in homes.index if homes[h] >= 5][:2]
     fig, axes = plt.subplots(1, max(len(homes), 1), figsize=(W2, 3.1))
@@ -158,6 +208,17 @@ def pick_representative(s, typ, has_gps=False):
     return int(g.iloc[(g.duration_min - med).abs().argsort()].flight_id.iloc[0])
 
 
+def first_bin_masked(v: pd.Series) -> pd.Series:
+    """Blank the first 2 s bin of each run of avionics data.
+
+    Bundles exported before the 10 Hz leading-zero mask for avionics channels can average the last zeros before
+    switch-on into that bin (e.g. 14.3 = 2/3 of 21.5 degC); newer bundles never contain such a bin."""
+    v = v.copy()
+    start = v.notna() & ~v.shift(1).notna()
+    v[start] = np.nan
+    return v
+
+
 def fig_representative(o, s, bundle):
     fl, ch = pick_representative(s, "flight test", True), pick_representative(s, "charging")
     ids = [x for x in (fl, ch) if x is not None]
@@ -177,18 +238,20 @@ def fig_representative(o, s, bundle):
                     c, ls = PACK[b]
                     ax.plot(x, t[col.format(b)], color=c, ls=ls, lw=1.0, label=f"pack {b}")
                 if col.startswith("b{}_max_cell_temp") and t.oat_c.notna().any():
-                    ax.plot(x, t.oat_c, color=INK3, lw=1.0, ls=":", label="outside air")
+                    oat = first_bin_masked(t.oat_c)
+                    ax.plot(x, oat, color=INK3, lw=1.0, ls=":")
+                    k = oat.last_valid_index()
+                    ax.annotate("outside\nair", (x[k], oat[k]), xytext=(4, 0), textcoords="offset points", ha="left", va="center", fontsize=6.5, color=INK3)
             elif t[col].notna().any():
-                ax.plot(x, t[col], color=INK2, lw=1.0)
+                ax.plot(x, first_bin_masked(t[col]), color=INK2, lw=1.0)
             else:
                 ax.text(0.5, 0.5, "not logged (avionics off)", transform=ax.transAxes, ha="center", va="center", color=INK3, fontsize=7)
             if j == 0:
                 ax.set_ylabel(lab)
             if i == 0:
                 ax.set_title(f"{'ab'[j]}  {'Flight test' if j == 0 and fl else 'Charging'}, {meta.aircraft_label}, session {fid}")
-                ax.legend(loc="best", ncol=3)
-            if i == 2 and j == 0 and t.oat_c.notna().any():
-                ax.legend(loc="best", ncol=3)
+                if j == 0:
+                    ax.legend(loc="upper right", ncol=2)
         axes[-1, j].set_xlabel("time since start of recording (min)")
     o.save(fig, "fig_representative")
     o.num("representative_flight_id", fl)
@@ -197,8 +260,9 @@ def fig_representative(o, s, bundle):
 
 def fig_operations(o, s):
     ok = s[~s.scale_anomaly.fillna(False) & ~s.is_duplicate_content.fillna(False)]
-    fl = ok[is_flight(ok.session_type) & ok.b1_soc_start.notna() & ok.b1_soc_end.notna() & ok.get("usable_C_soc_dod", True).fillna(False)]
-    ch = ok[(ok.session_type == "charging") & ok.b1_soc_start.notna() & ok.b1_soc_end.notna()]
+    # same selections as the operations table: flight-profile and charging usability flags
+    fl = ok[is_flight(ok.session_type) & ok.b1_soc_start.notna() & ok.b1_soc_end.notna() & ok.usable_B_profiles.fillna(False).astype(bool)]
+    ch = ok[(ok.session_type == "charging") & ok.b1_soc_start.notna() & ok.b1_soc_end.notna() & ok.usable_D_charging.fillna(False).astype(bool)]
     fig, ax = plt.subplots(1, 3, figsize=(W2, 2.2))
     for a in AC:
         g = fl[fl.aircraft_label == a]
@@ -210,7 +274,7 @@ def fig_operations(o, s):
         ax[1].scatter(g.loc[e.index, "duration_min"], e, s=4, color=AC_COL[a], marker=AC_MK[a], alpha=0.6, lw=0)
     ax[0].set_xlabel("depth of discharge, pack 1 (SOC points)")
     ax[0].set_ylabel("cumulative share of flights")
-    ax[0].legend(loc="upper left", fontsize=6.5)
+    ax[0].legend(loc="center left", fontsize=6.5)
     ax[0].set_title("a  Depth of discharge")
     ax[1].set_xlabel("session duration (min)")
     ax[1].set_ylabel("energy out, both packs (kWh)")
@@ -234,7 +298,7 @@ def fig_operations(o, s):
 
 def fig_thermal(o, s):
     g = s[s.oat_c_median.notna() & s.b1_temp_max_c.notna() & ~s.is_duplicate_content.fillna(False)]
-    fl = s[is_flight(s.session_type) & s.b1_temp_delta_c.notna() & ~s.scale_anomaly.fillna(False)]
+    fl = s[is_flight(s.session_type) & s.b1_temp_delta_c.notna() & s.usable_B_profiles.fillna(False).astype(bool)]
     if g.empty:
         return
     fig, ax = plt.subplots(1, 2, figsize=(W2, 2.4))
@@ -263,7 +327,9 @@ def fig_thermal(o, s):
 
 
 def fig_soh(o, s, p):
-    acs = [a for a in AC if (s[s.aircraft_label == a].b1_soh_median.notna().sum() >= 10)]
+    # an aircraft needs reported SOH on several distinct days for a trajectory
+    acs = [a for a in AC if s[(s.aircraft_label == a) & s.b1_soh_median.notna()].start_utc.dt.date.nunique() >= 5]
+    o.num("soh_trajectory_aircraft", acs)
     fig, axes = plt.subplots(len(acs), 1, figsize=(W2, 1.55 * len(acs) + 0.3), sharex=True, squeeze=False)
     for ax, a in zip(axes[:, 0], acs):
         g = s[(s.aircraft_label == a) & s.b1_soh_median.notna() & ~s.is_duplicate_content.fillna(False)].sort_values("start_utc")
@@ -285,7 +351,8 @@ def fig_soh(o, s, p):
 
 
 def fig_soh_vs_cells(o, p):
-    g = p[p.soh_median.notna() & p.soh_cell_cells_last_min.notna() & (p.soh_cell_cells_last_max <= 100.5) & ~p.uniform_cells.fillna(False).astype(bool)]
+    g = p[p.soh_median.notna() & p.soh_cell_cells_last_min.notna() & (p.soh_cell_cells_last_max <= 100.5) & ~p.uniform_cells.fillna(False).astype(bool)
+          & ~p.is_duplicate_content.fillna(False).astype(bool)]
     if g.empty:
         return
     fig, ax = plt.subplots(1, 2, figsize=(W2, 2.6), sharey=True)
@@ -308,6 +375,11 @@ def fig_soh_vs_cells(o, p):
     fig.tight_layout(w_pad=1)
     o.save(fig, "fig_soh_vs_cells")
     o.num("n_pack_sessions_soh_cells", int(len(g)))
+    o.num("soh_minus_min_median", float((g.soh_median - g.soh_cell_cells_last_min).median()))
+    o.num("mean_minus_soh_mean", float((g.soh_cell_cells_last_mean - g.soh_median).mean()))
+    o.num("max_minus_soh_mean", float((g.soh_cell_cells_last_max - g.soh_median).mean()))
+    o.num("cell_spread_median", {f"{a}|{b}": float((x.soh_cell_cells_last_max - x.soh_cell_cells_last_min).median())
+                                 for (a, b), x in g.groupby(["aircraft_label", "battery"]) if len(x) >= 10})
 
 
 def fig_soh_mechanics(o, s, st):
@@ -335,13 +407,23 @@ def fig_soh_mechanics(o, s, st):
     ax[1].set_xlabel("SOC at start of charge (%)")
     ax[1].set_ylabel("share of charging sessions (%)")
     ax[1].set_title("b  Charging start SOC")
-    ax[1].legend(loc="upper right", fontsize=6.5)
+    ax[1].set_ylim(0, 122)
+    ax[1].set_yticks(range(0, 101, 20))
+    h_, l_ = ax[1].get_legend_handles_labels()
+    ax[1].legend(h_[::-1], l_[::-1], loc="upper center", ncol=3, fontsize=6.3, handlelength=1, columnspacing=0.8, borderaxespad=0.1)
     neg = steps[steps.delta < 0].sort_values("t_min").groupby("flight_id").first()
     neg = neg[neg.index.isin(ch.flight_id)].dropna(subset=["temp_at_start_c"])
     if len(neg) >= 5:
-        ax[2].scatter(neg.temp_at_start_c, neg.t_min, s=7, color="#eb6834", alpha=0.7, lw=0)
+        ac_of_ = ch.set_index("flight_id").aircraft_label
+        lab_ = neg.index.map(ac_of_)
+        for a in AC:
+            m_ = np.asarray(lab_ == a)
+            if m_.any():
+                ax[2].scatter(neg.temp_at_start_c[m_], neg.t_min[m_], s=8, marker=AC_MK[a], facecolor="none",
+                              edgecolor=INK2, lw=0.6, alpha=0.8, label=f"{a} (n={int(m_.sum())})")
+        ax[2].legend(loc="center right", fontsize=6.3, handletextpad=0.2, borderaxespad=0.1)
         r = stats.spearmanr(neg.temp_at_start_c, neg.t_min)
-        ax[2].text(0.97, 0.95, f"Spearman {r[0]:.2f}, n={len(neg)}", transform=ax[2].transAxes, ha="right", va="top", fontsize=7)
+        ax[2].text(0.03, 0.97, f"pooled Spearman {r[0]:.2f}", transform=ax[2].transAxes, ha="left", va="top", fontsize=6.5)
         o.num("neg_step_timing_rho", float(r[0]))
         o.num("neg_step_timing_p", float(r[1]))
         o.num("neg_step_timing_n", int(len(neg)))
@@ -349,6 +431,15 @@ def fig_soh_mechanics(o, s, st):
         o.num("neg_step_minutes_cold_median", float(cold.t_min.median()) if len(cold) else None)
         o.num("neg_step_minutes_hot_median", float(hot.t_min.median()) if len(hot) else None)
         o.num("neg_step_soc_median", float(neg.soc_at_step.median()))
+        ac_of = ch.set_index("flight_id").aircraft_label
+        for ac, g in neg.groupby(neg.index.map(ac_of)):
+            if len(g) < 10:
+                continue
+            ra = stats.spearmanr(g.temp_at_start_c, g.t_min)
+            c, w = g[g.temp_at_start_c < 15], g[g.temp_at_start_c >= 25]
+            o.num(f"neg_step_{ac}", {"rho": float(ra[0]), "p": float(ra[1]), "n": int(len(g)),
+                                      "cold_min": float(c.t_min.median()) if len(c) else None, "n_cold": int(len(c)),
+                                      "hot_min": float(w.t_min.median()) if len(w) else None, "n_hot": int(len(w))})
     ax[2].set_xlabel("max cell temperature at start of charge (°C)")
     ax[2].set_ylabel("minutes to first downward step")
     ax[2].set_title("c  Timing of downward steps")
@@ -359,6 +450,12 @@ def fig_soh_mechanics(o, s, st):
     for b in cnt.index:
         o.num(f"charge_band_{b}", {k: float(cnt.loc[b, k]) for k in ("up", "none", "down", "n")})
     up = steps[steps.delta > 0]
+    # is the direction of an in-charge revision related to the start temperature? (charges with a net change only)
+    chg = ch[ch.net != 0]
+    for a, g in chg.groupby("aircraft_label"):
+        if len(g) >= 30 and "b1_temp_start_c" in g:
+            r = stats.spearmanr(g.b1_temp_start_c, (g.net > 0).astype(int), nan_policy="omit")
+            o.num(f"direction_vs_temp_{a}", {"rho": float(r[0]), "p": float(r[1]), "n": int(g.b1_temp_start_c.notna().sum())})
     o.num("steps_soc_iqr", [float(steps.soc_at_step.quantile(.25)), float(steps.soc_at_step.quantile(.75))] if len(steps) else None)
     o.num("n_steps_pack1", int(len(steps)))
     o.num("n_up_steps_pack1", int(len(up)))
@@ -390,10 +487,10 @@ def fig_observability(o, s, p):
         m = c.set_index("start_utc").implied_capacity_ah.resample("MS").median().dropna()
         a1.scatter(c.start_utc, c.implied_capacity_ah, s=3, color=AC_COL[a], alpha=0.25, lw=0)
         a1.plot(m.index + pd.Timedelta(days=15), m, color=AC_COL[a], marker=AC_MK[a], ms=3, lw=1.0, label=a)
-        r = s[(s.aircraft_label == a) & s.b1_soh_median.notna()].set_index("start_utc").b1_soh_median.resample("MS").median().dropna()
+        r = s[(s.aircraft_label == a) & s.b1_soh_median.notna() & ~s.is_duplicate_content.fillna(False).astype(bool)].set_index("start_utc").b1_soh_median.resample("MS").median().dropna()
         a2.plot(r.index + pd.Timedelta(days=15), r, color=AC_COL[a], marker=AC_MK[a], ms=3, lw=1.0)
     a1.set_ylabel("window capacity (Ah)")
-    a1.set_title("b  Monthly medians: SOC-window capacity (top) and reported SOH, pack 1 (bottom)")
+    a1.set_title("b  Monthly medians, pack 1")
     a1.legend(loc="lower left", ncol=3, fontsize=6.5)
     plt.setp(a1.get_xticklabels(), visible=False)
     a2.set_ylabel("reported SOH (%)")
@@ -406,6 +503,10 @@ def fig_observability(o, s, p):
 
 # ----------------------------------------------------------------------------------------------- tables
 def tab_dataset(o, s, ac, ap, man):
+    for a_ in AC:
+        g_ = s[s.aircraft_label == a_]
+        o.num(f"usable_{a_}", {c.removeprefix("usable_"): int(g_[c].fillna(False).astype(bool).sum())
+                               for c in s.columns if c.startswith("usable_") and c != "usable_exclusion_reason"} | {"downloaded": int(g_.has_timeseries.fillna(False).sum()) if "has_timeseries" in g_ else None})
     rows = []
     apn = dict(zip(ap.code, ap.name)) if len(ap) else {}
     for a in AC:
@@ -435,13 +536,113 @@ def tab_dataset(o, s, ac, ap, man):
     o.num("base_names", {c: apn.get(c) for c in set(a.get("home_airfield") for a in ac) if c})
 
 
+def _theil(t, y):
+    ok = np.isfinite(t) & np.isfinite(y)
+    if ok.sum() < 4 or np.ptp(t[ok]) <= 0:
+        return (np.nan, np.nan, np.nan)
+    r = stats.theilslopes(y[ok], t[ok])
+    return (r.slope, r.low_slope, r.high_slope)
+
+
+def tab_trends_bundle(o, p, min_months=6):
+    """Fade per year, pack 1: Theil-Sen over sessions and over calendar-month medians (each month one vote).
+
+    Same method as eplanes.analysis.eda.monthly_trends, with explicit filters: duplicates (including logs listed under
+    two aircraft) are excluded from every series, and per-cell estimates above 100.5 % (scale-fault sessions) are dropped."""
+    b = p[(p.battery == 1) & p.start_utc.notna() & ~p.is_duplicate_content.fillna(False).astype(bool)]
+    series = [
+        ("reported SOH", "pts", b[b.F_soh.fillna(False).astype(bool)], "soh_median"),
+        ("min per-cell SOH", "pts", b[b.soh_cell_cells_last_max <= 100.5], "soh_cell_cells_last_min"),
+        ("mean per-cell SOH", "pts", b[b.soh_cell_cells_last_max <= 100.5], "soh_cell_cells_last_mean"),
+        ("window capacity", "Ah", b[b.G_capacity.fillna(False).astype(bool) & (b.capacity_reason == "ok")], "implied_capacity_ah"),
+    ]
+    rows, out = [], {}
+    for a in AC:
+        first_row = True
+        for name, unit, d, col in series:
+            g = d[(d.aircraft_label == a)].dropna(subset=[col])
+            if len(g) < 8:
+                continue
+            t = ((g.start_utc - pd.Timestamp("1970-01-01")).dt.total_seconds() / 86400 / 365.25).to_numpy(float)
+            s_sl = _theil(t, g[col].to_numpy(float))[0]
+            m = g.assign(month=g.start_utc.dt.to_period("M")).groupby("month")[col].median()
+            tm = np.array([((pp.start_time + pd.Timedelta(days=15)) - pd.Timestamp("1970-01-01")).total_seconds() / 86400 / 365.25 for pp in m.index])
+            m_sl, lo, hi = _theil(tm, m.to_numpy(float)) if len(m) >= min_months else (np.nan, np.nan, np.nan)
+            pct = 100 * m_sl / m.iloc[0] if unit == "Ah" and np.isfinite(m_sl) else np.nan
+            out[f"{a}|{name}"] = dict(months=len(m), sessions=len(g), session=s_sl, monthly=m_sl, lo=lo, hi=hi, pct=pct)
+            if len(m) < 3:
+                continue
+            ci = f"[{f(lo, 1, True)}, {f(hi, 1, True)}]" if np.isfinite(lo) else "--"
+            rows.append([a if first_row else "", name, unit, len(m), f(s_sl, 1), f(m_sl, 1), ci, f(pct, 1) if np.isfinite(pct) else "--"])
+            first_row = False
+        if not first_row:
+            rows.append("MID")
+    if rows:
+        o.table("tab_trends", ["Aircraft", "Indicator", "Unit", "Months", "Per session", "Monthly", "95\\% CI", r"\%/yr"], rows[:-1], "lllrrrlr")
+    o.num("trends", out)
+
+
+def soh_jumps(o, p):
+    """Session-to-session changes of reported SOH (method of eplanes.analysis.eda.section_F): a jump is a change of at
+    least 2 points and 4 robust standard deviations of that pack's changes."""
+    d = p[p.F_soh.fillna(False).astype(bool) & p.soh_median.notna() & p.start_utc.notna() &
+          ~p.is_duplicate_content.fillna(False).astype(bool)].sort_values(["aircraft_label", "battery", "start_utc", "flight_id"])
+    jumps, share = [], {}
+    for (a, b), g in d.groupby(["aircraft_label", "battery"]):
+        x = g.soh_median.to_numpy(float)
+        if len(x) < 3:
+            continue
+        ds = np.diff(x)
+        days = g.start_utc.diff().dt.total_seconds().to_numpy()[1:] / 86400
+        mad = 1.4826 * np.median(np.abs(ds - np.median(ds))) or 0.5
+        big = np.abs(ds) >= max(2.0, 4 * mad)
+        share[f"{a}|{b}"] = float((ds > 0).mean())
+        jumps += [dict(aircraft=a, battery=b, flight_id=int(g.flight_id.iloc[k + 1]), delta=float(ds[k]), idle_days=float(days[k]))
+                  for k in np.flatnonzero(big)]
+    j = pd.DataFrame(jumps)
+    o.num("n_large_jumps", int(len(j)))
+    o.num("increase_share", share)
+    idle = j[(j.battery == 1) & (j.idle_days > 30)] if len(j) else j
+    tau = {}
+    for (a, b), g in d.groupby(["aircraft_label", "battery"]):
+        if len(g) > 5 and g.start_utc.dt.date.nunique() > 5:
+            tau[f"{a}|{b}"] = float(stats.kendalltau(g.start_utc.astype("int64"), g.soh_median)[0])
+    o.num("kendall_tau_date", tau)
+    w = d[d.aircraft_label == "C-GAUW"].pivot_table(index="flight_id", columns="battery", values="soh_median").dropna()
+    if len(w) >= 10:
+        diff = (w[1] - w[2]).to_numpy()
+        nz = diff[diff != 0]
+        rk = stats.rankdata(np.abs(nz))
+        rbc = float((rk[nz > 0].sum() - rk[nz < 0].sum()) / rk.sum()) if len(nz) else np.nan
+        o.num("pack_gap_C-GAUW", {"n": int(len(w)), "median": float(np.median(diff)), "rank_biserial": rbc,
+                                  "p": float(stats.wilcoxon(nz)[1]) if len(nz) > 10 else None})
+    o.num("idle_jumps_pack1", idle.to_dict("records"))
+
+
+def reset_test(o, p):
+    """Do reported-SOH increases (>= 2 points between consecutive sessions with BMS files) coincide with the BMS
+    entering a uniform-cell state? Method of eplanes.analysis.stats (H9), duplicates excluded."""
+    b = p[p.start_utc.notna() & p.soh_cell_cells_last_max.notna() & (p.soh_cell_cells_last_max <= 100.5) &
+          ~p.is_duplicate_content.fillna(False).astype(bool)].sort_values(["aircraft_label", "battery", "start_utc", "flight_id"]).copy()
+    b["uniform_cells"] = b.uniform_cells.fillna(False).astype(bool)
+    grp = b.groupby(["aircraft_label", "battery"])
+    b["d_soh"] = grp.soh_median.diff()
+    b["enter"] = b.uniform_cells & ~grp.uniform_cells.shift(1).fillna(False).astype(bool)
+    ev = b.dropna(subset=["d_soh"])
+    inc = ev.d_soh >= 2
+    tab = np.array([[int((inc & ev.enter).sum()), int((inc & ~ev.enter).sum())], [int((~inc & ev.enter).sum()), int((~inc & ~ev.enter).sum())]])
+    odds, pv = stats.fisher_exact(tab, alternative="greater") if tab[0].sum() and tab[:, 0].sum() else (np.nan, np.nan)
+    o.num("reset_test", {"table": tab.tolist(), "odds_ratio": float(odds), "p": float(pv), "n_pairs": int(tab.sum()),
+                         "n_increases": int(tab[0].sum()), "n_increase_with_entry": int(tab[0, 0]), "n_uniform": int(b.uniform_cells.sum())})
+
+
 def tab_operations(o, s):
     ok = s[~s.scale_anomaly.fillna(False) & ~s.is_duplicate_content.fillna(False)]
     rows = []
     for a in AC:
         g = ok[(ok.aircraft_label == a)]
-        fl = g[is_flight(g.session_type) & g.b1_soc_start.notna()]
-        ch = g[(g.session_type == "charging") & g.b1_soc_start.notna()]
+        fl = g[is_flight(g.session_type) & g.b1_soc_start.notna() & g.usable_B_profiles.fillna(False).astype(bool)]
+        ch = g[(g.session_type == "charging") & g.b1_soc_start.notna() & g.usable_D_charging.fillna(False).astype(bool)]
         if len(fl) < 3:
             continue
         e = fl.b1_energy_discharged_kwh + fl.b2_energy_discharged_kwh
@@ -502,11 +703,65 @@ def write_macros(n: dict, path: Path):
         "NegStepRho": num(n.get("neg_step_timing_rho"), 2), "NegStepN": num(n.get("neg_step_timing_n")),
         "NegStepColdMin": num(n.get("neg_step_minutes_cold_median")), "NegStepHotMin": num(n.get("neg_step_minutes_hot_median")),
         "NegStepSoc": num(n.get("neg_step_soc_median")),
+        # LaTeX macro names cannot contain digits: C-GAUW -> Gauw, VSW1280102 -> Vsw
+        **{f"NegStep{key}{tag}": num((n.get(f"neg_step_{ac}") or {}).get(f), d)
+           for ac, tag in (("C-GAUW", "Gauw"), ("VSW1280102", "Vsw"))
+           for key, f, d in (("Rho", "rho", 2), ("N", "n", 0), ("Cold", "cold_min", 0), ("Hot", "hot_min", 0), ("NCold", "n_cold", 0), ("NHot", "n_hot", 0))},
         "StepSocLo": num((n.get("steps_soc_iqr") or [None, None])[0]), "StepSocHi": num((n.get("steps_soc_iqr") or [None, None])[1]),
         "CellOverAmbient": num(n.get("cell_over_ambient_median"), 1), "CellOverAmbientCold": num(n.get("cell_over_ambient_below5C"), 1),
         "CellOverAmbientWarm": num(n.get("cell_over_ambient_above20C"), 1), "NOat": num(n.get("n_sessions_with_oat")),
         "RepFlight": str(n.get("representative_flight_id") or "\\pending"), "RepCharge": str(n.get("representative_charge_id") or "\\pending"),
     }
+    # fade trends (magnitudes of declining slopes; CI bounds swap when negated)
+    tr = n.get("trends", {}) or {}
+    main2 = ("C-GAUW", "VSW1280102")
+
+    def tv(a, q, k):
+        v = (tr.get(f"{a}|{q}") or {}).get(k)
+        return None if v is None or not np.isfinite(v) else float(v)
+
+    def rng(q, k, d=1, neg=True):
+        v = [tv(a, q, k) for a in main2]
+        v = [(-x if neg else x) for x in v if x is not None]
+        return "\\pending" if not v else (num(min(v), d) if f"{min(v):.{d}f}" == f"{max(v):.{d}f}" else f"{min(v):.{d}f}--{max(v):.{d}f}")
+    ratios = [tv(a, q, "session") / tv(a, q, "monthly") for a in main2 for q in ("reported SOH", "min per-cell SOH", "mean per-cell SOH", "window capacity")
+              if tv(a, q, "session") is not None and tv(a, q, "monthly")]
+    for a, tag in (("C-GAUW", "Gauw"), ("VSW1280102", "Vsw")):
+        m[f"TrSoh{tag}"] = num(-tv(a, "reported SOH", "monthly") if tv(a, "reported SOH", "monthly") is not None else None, 1)
+        m[f"TrSoh{tag}Lo"] = num(-tv(a, "reported SOH", "hi") if tv(a, "reported SOH", "hi") is not None else None, 1)
+        m[f"TrSoh{tag}Hi"] = num(-tv(a, "reported SOH", "lo") if tv(a, "reported SOH", "lo") is not None else None, 1)
+    m.update({"TrMinCell": rng("min per-cell SOH", "monthly"), "TrMeanCell": rng("mean per-cell SOH", "monthly"),
+              "TrCap": rng("window capacity", "monthly"), "TrCapPct": rng("window capacity", "pct"),
+              "TrRatioLo": num(min(ratios), 1) if ratios else "\\pending", "TrRatioHi": num(max(ratios), 1) if ratios else "\\pending",
+              "TrMonthsGmuw": num((tr.get("C-GMUW|reported SOH") or {}).get("months"))})
+    idle = n.get("idle_jumps_pack1") or []
+    m.update({"NLargeJumps": num(n.get("n_large_jumps")), "IdleJumpsN": num(len(idle)) if idle else "\\pending",
+              "IdleJumpsDown": num(sum(1 for r in idle if r["delta"] < 0)) if idle else "\\pending"})
+    sp = n.get("cell_spread_median") or {}
+    def spread(a):
+        v = [x for k, x in sp.items() if k.startswith(a + "|")]
+        return "\\pending" if not v else (f"{min(v):.0f}" if round(min(v)) == round(max(v)) else f"{min(v):.0f}--{max(v):.0f}")
+    taus = [v for k, v in (n.get("kendall_tau_date") or {}).items() if k.split("|")[0] in ("C-GAUW", "C-GMUW", "VSW1280102")]
+    pg = n.get("pack_gap_C-GAUW") or {}
+    ug = n.get("usable_C-GAUW") or {}
+    dv = {a: n.get(f"direction_vs_temp_{a}") or {} for a in main2}
+    m.update({"SohMinRho": num(n.get("soh_vs_min_rho"), 3), "SohMinWithin": pct(n.get("soh_vs_min_within1")), "SohCellsN": num(n.get("n_pack_sessions_soh_cells")),
+              "SohMinOffset": num(-(n.get("soh_minus_min_median") or 0) if n.get("soh_minus_min_median") is not None else None, 1),
+              "SohBelowMean": num(n.get("mean_minus_soh_mean"), 1), "SohBelowMax": num(n.get("max_minus_soh_mean"), 1),
+              "SpreadGauw": spread("C-GAUW"), "SpreadVsw": spread("VSW1280102"), "SpreadGmuw": spread("C-GMUW"),
+              "TauLo": num(min(taus), 2) if taus else "\\pending", "TauHi": num(max(taus), 2) if taus else "\\pending",
+              "PackGapN": num(pg.get("n")), "PackGapMedian": num(abs(pg["median"]) if pg.get("median") is not None else None, 0),
+              "PackGapR": num(pg.get("rank_biserial"), 2),
+              "UseGauwDl": num(ug.get("downloaded")), "UseGauwB": num(ug.get("B_profiles")), "UseGauwF": num(ug.get("F_soh")), "UseGauwG": num(ug.get("G_capacity")),
+              "DirTempGauw": num(dv["C-GAUW"].get("rho"), 2), "DirTempVsw": num(dv["VSW1280102"].get("rho"), 2),
+              "DirTempGauwP": num(dv["C-GAUW"].get("p"), 2), "DirTempVswP": num(dv["VSW1280102"].get("p"), 2)})
+    rt = n.get("reset_test") or {}
+    m.update({"ResetN": num(rt.get("n_uniform")), "ResetInc": num(rt.get("n_increases")), "ResetIncEnter": num(rt.get("n_increase_with_entry")),
+              "ResetOR": num(rt.get("odds_ratio"), 1), "ResetP": num(rt.get("p"), 2), "ResetPairs": num(rt.get("n_pairs")),
+              "ResetIncPct": pct(rt["n_increase_with_entry"] / rt["n_increases"]) if rt.get("n_increases") else "\\pending"})
+    inc = n.get("increase_share") or {}
+    incv = [v for k, v in inc.items() if k.split("|")[0] in main2]
+    m["IncShare"] = f"{100 * min(incv):.0f}--{100 * max(incv):.0f}\\%" if incv else "\\pending"
     lines = ["% generated by paper/make_figures.py from the web bundle; do not edit by hand",
              f"% bundle created {n.get('bundle_created_utc')}; synthetic={n.get('synthetic')}"]
     lines += [f"\\newcommand{{\\{k}}}{{{v}}}" for k, v in m.items()]
@@ -536,6 +791,10 @@ def main():
     tab_operations(out, s)
     if a.results:
         tab_results(out, Path(a.results))
+    tab_trends_bundle(out, p)  # supersedes the results-archive trend table: same method, corrected attribution
+    soh_jumps(out, p)
+    reset_test(out, p)
+    out.num("cross_aircraft_groups", CROSS)
     (Path(a.out) / "numbers.json").write_text(json.dumps(out.numbers, indent=1, default=str))
     write_macros(out.numbers, Path(a.out) / "numbers.tex")
     print(f"figures -> {out.fig}, tables -> {out.tab}, numbers -> {Path(a.out) / 'numbers.json'}")

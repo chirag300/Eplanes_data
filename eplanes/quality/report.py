@@ -84,6 +84,26 @@ def run_quality(settings: Settings, external_flights: str | None = None, log=pri
     findings.append(f"Duplicates: {len(dup)} duplicate groups (identical ZIP/content or same aircraft+start time); "
                     f"duplicated flight_id in manifest: {int(man.flight_id.duplicated().sum())}.")
     f["is_duplicate_content"] = f.duplicated("content_hash", keep="first") & f["content_hash"].notna()
+    # the same log listed under two aircraft: keep the copy that fits that aircraft's SOH history (see crossdup)
+    from .crossdup import resolve, session_soh
+    f["cross_aircraft_duplicate"] = False
+    cross_ids = f[f.content_hash.notna()].groupby("content_hash").filter(lambda g: g.aircraft_label.nunique() > 1).flight_id
+    if len(cross_ids):
+        tsp = settings.data_dir / "processed" / "analysis_ready_timeseries.parquet"
+        f["_soh"] = f.flight_id.map(session_soh(tsp)) if tsp.exists() else np.nan
+        res = resolve(f, soh="_soh")
+        f = f.drop(columns="_soh")
+        f["cross_aircraft_duplicate"] = f.flight_id.isin(res.flight_id)
+        keep_ids = set(res[res.keep].flight_id)
+        in_grp = f.flight_id.isin(res.flight_id)
+        f.loc[in_grp, "is_duplicate_content"] = ~f.loc[in_grp, "flight_id"].isin(keep_ids)
+        res.to_csv(qdir / "qc_cross_aircraft_duplicates.csv", index=False)
+        for _, g in res.groupby("group"):
+            k = g[g.keep]
+            findings.append("Same log under two aircraft: sessions " + ", ".join(f"{r.flight_id} ({r.aircraft_label})" for r in g.itertuples()) +
+                            " have identical content; " + (f"kept as {k.aircraft_label.iloc[0]} (session {k.flight_id.iloc[0]}), whose "
+                                                           "neighbouring sessions match its reported SOH" if len(k) else
+                                                           "the owner cannot be decided from the data, so all copies are excluded") + ".")
 
     # 2 timestamps / sampling ------------------------------------------------------
     gap_min = cfg["quality"].get("gap_min_s", 2.0) / 60.0

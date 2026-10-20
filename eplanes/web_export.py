@@ -138,7 +138,7 @@ def _session_frame(settings: Settings, rule: str) -> tuple[pd.DataFrame, pd.Data
     keep = [c for c in ["flight_id", "account", "aircraft_id", "aircraft_label", "fleet", "download_status", "flight_type", "flight_type_raw",
                         "page_registration", "page_serial_number", "start_datetime", "n_rows", "duration_min", "median_dt_min", "n_gaps",
                         "max_gap_min", "n_duplicate_time", "n_nonmonotonic", "n_out_of_range", "n_sentinel", "frac_avionics_valid",
-                        "start_state", "frac_charge", "frac_discharge", "n_segments", "max_abs_current", "is_duplicate_content",
+                        "start_state", "frac_charge", "frac_discharge", "n_segments", "max_abs_current", "is_duplicate_content", "cross_aircraft_duplicate",
                         "has_gap", "activity_from_data", "label_content_mismatch", "scale_anomaly", "has_timeseries", "offset_h_rounded"]
             if c in fl]
     s = fl[keep].copy()
@@ -335,7 +335,8 @@ def _dictionary(settings: Settings, sessions: pd.DataFrame, packs: pd.DataFrame)
         "start_utc": "Session start (portal, minute resolution; on the avionics GPS clock, i.e. UTC)", "end_utc": "start_utc + duration",
         "duration_min": "Recording duration", "n_rows": "Rows in the 10 Hz main log", "activity_from_data": "Dominant activity from measured current",
         "label_content_mismatch": "Portal label contradicts the measured current direction", "scale_anomaly": "Current/voltage scaling fault (exclude from electrical analyses)",
-        "is_duplicate_content": "Byte-identical duplicate of an earlier session", "has_gap": "Contains a logging gap > max(5 dt, 2 s)",
+        "is_duplicate_content": "Copy of another session with identical content; excluded from analyses",
+        "cross_aircraft_duplicate": "The same log is listed under more than one aircraft; only the copy matching that aircraft's SOH history is kept", "has_gap": "Contains a logging gap > max(5 dt, 2 s)",
         "dep_airport": "Airfield at the first valid GPS fix (within 3 km)", "arr_airport": "Airfield at the last valid GPS fix (within 3 km)",
         "track_km": "GPS track length (2 s points, jumps > 600 km/h removed)", "has_gps_track": "At least 10 valid GPS points",
         "bX_soc_start/bX_soc_end": "Reported SOC after the start-up window / at the end, pack X", "bX_soh_median": "Median reported SOH in the session, pack X",
