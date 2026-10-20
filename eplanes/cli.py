@@ -60,6 +60,9 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--out", default=None, help="web-static: output directory")
+    ap.add_argument("--downloads-url", default=None,
+                    help="web-static: base URL where the release files are hosted (e.g. https://zenodo.org/records/<id>/files)")
+    ap.add_argument("--copy-release", action="store_true", help="web-static: copy the release files into the site (small releases only)")
     a = ap.parse_args(argv)
 
     s = load_settings(a.config)
@@ -86,7 +89,7 @@ def main(argv=None):
         if cmd == "web":
             serve(bundle, rel, a.host, a.port, settings=s)
         else:
-            build_static(bundle, Path(a.out or s.outputs_dir / "web_static"), rel)
+            build_static(bundle, Path(a.out or s.outputs_dir / "web_static"), rel, copy_release=a.copy_release, downloads_url=a.downloads_url)
         return 0
     if cmd == "discover":
         from .acquisition.downloader import run_discover

@@ -99,3 +99,13 @@ def test_static_snapshot(bundle, tmp_path):
     assert st["mode"] == "static"
     assert "mode: 'static'" in (site / "config.js").read_text()
     assert len(list((site / "data" / "sessions").glob("*.json"))) == st["dataset"]["n_sessions"]
+
+
+def test_static_snapshot_links_downloads_to_hosted_files(bundle, tmp_path):
+    from eplanes.web.server import build_static
+    s, out, rel = bundle
+    site = build_static(out, tmp_path / "site2", rel, downloads_url="https://zenodo.org/records/123/files/")
+    dl = json.loads((site / "data" / "downloads.json").read_text())
+    assert dl["files"] and all(f["url"].startswith("https://zenodo.org/records/123/files/") and f["url"].endswith("?download=1")
+                               for f in dl["files"])
+    assert not (site / "downloads").exists()  # nothing copied into the site

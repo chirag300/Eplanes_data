@@ -471,8 +471,12 @@ def serve(bundle: Path, release: Path | None = None, host: str = "127.0.0.1", po
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
-def build_static(bundle: Path, out: Path, release: Path | None = None, copy_release: bool = False) -> Path:
-    """Write the site plus every API response as JSON files; no server needed."""
+def build_static(bundle: Path, out: Path, release: Path | None = None, copy_release: bool = False,
+                 downloads_url: str | None = None) -> Path:
+    """Write the site plus every API response as JSON files; no server needed.
+
+    Release files are linked, in order of preference, to ``downloads_url`` (where they are hosted, e.g. a Zenodo
+    record's files), to copies inside the site (``copy_release``), or listed without a link."""
     store = Store(bundle, release)
     if out.exists():
         shutil.rmtree(out)
@@ -499,7 +503,12 @@ def build_static(bundle: Path, out: Path, release: Path | None = None, copy_rele
     dump(d / "quality.json", store.quality_payload())
     dump(d / "dictionary.json", records(store.dictionary))
     dl = store.downloads_payload()
-    if dl.get("available") and copy_release and release:
+    if dl.get("available") and downloads_url:
+        from urllib.parse import quote
+        base = downloads_url.rstrip("/")
+        for f in dl["files"]:
+            f.update(available=True, url=f"{base}/{quote(f['file'])}" + ("?download=1" if "zenodo.org" in base else ""))
+    elif dl.get("available") and copy_release and release:
         (out / "downloads").mkdir()
         for f in dl["files"]:
             if (release / f["file"]).exists():

@@ -101,6 +101,13 @@ outputs/eplanes_results_*.zip       the archive to upload back for paper writing
   including a *uniform-cell* signature (all 96 cells report identical SOH and capacity) consistent with an estimator reset;
   hypothesis H9 tests whether reported-SOH increases coincide with entering that state.
 
+## Website
+
+`python -m eplanes export-web` builds the website bundle, `release` builds the downloadable dataset, `web` serves the site
+on your machine and `web-static` writes a static snapshot. Hosting options, the map (OpenFreeMap, no API key), logos and the
+pre-publication checklist are in [docs/WEBSITE.md](docs/WEBSITE.md). Nothing is deployed; the site stays private until the
+paper is published.
+
 ## Data governance
 
 * `.env`, `data/`, `outputs/` and all ZIP/parquet files are git-ignored. `tests/test_repo_hygiene.py` fails if a password literal is committed. `package` scans the ZIP for credentials before writing it.
