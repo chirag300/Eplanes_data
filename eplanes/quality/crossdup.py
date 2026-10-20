@@ -29,11 +29,12 @@ def resolve(df: pd.DataFrame, key: str = "content_hash", soh: str = "soh", time:
     rows = []
     for gi, (_, g) in enumerate(groups.groupby(key, sort=False)):
         scored = []
-        for r in g.itertuples(index=False):
-            t, v = getattr(r, time), getattr(r, soh)
-            nb = pool[(pool.aircraft_label == r.aircraft_label) & ((pool[time] - t).abs() <= win)] if pd.notna(t) else pool.iloc[:0]
+        # records, not itertuples: itertuples renames columns that start with an underscore
+        for r in g.to_dict("records"):
+            t, v = r[time], r[soh]
+            nb = pool[(pool.aircraft_label == r["aircraft_label"]) & ((pool[time] - t).abs() <= win)] if pd.notna(t) else pool.iloc[:0]
             score = float(abs(nb[soh].median() - v)) if len(nb) and pd.notna(v) else np.inf
-            scored.append((r.flight_id, r.aircraft_label, score))
+            scored.append((r["flight_id"], r["aircraft_label"], score))
         ranked = sorted(scored, key=lambda x: x[2])
         best = ranked[0]
         decisive = np.isfinite(best[2]) and (len(ranked) == 1 or ranked[1][2] - best[2] >= 1.0)

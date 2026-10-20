@@ -34,3 +34,9 @@ def test_groups_within_one_aircraft_are_left_to_the_generic_rule():
     f = _frame()
     f.loc[f.flight_id == 101, "content_hash"] = "a0"  # duplicate inside aircraft A only
     assert set(resolve(f).flight_id) == {150, 250}
+
+
+def test_soh_column_may_start_with_underscore():
+    # the quality stage passes a temporary column named "_soh"
+    r = resolve(_frame().rename(columns={"soh": "_soh"}), soh="_soh").set_index("flight_id")
+    assert r.loc[250, "keep"] and not r.loc[150, "keep"]
