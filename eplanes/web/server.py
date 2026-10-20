@@ -177,7 +177,10 @@ class Store:
         if r.get("label_content_mismatch"):
             n.append(dict(level="warning", text=f"The portal labels this session '{r.get('session_type')}', but the measured current says '{r.get('activity_from_data')}'."))
         if r.get("has_gap"):
-            n.append(dict(level="info", text=f"{r.get('n_gaps') or 'Some'} logging gap(s), longest {r.get('max_gap_min') or 0:.1f} min; charge is not integrated across gaps."))
+            ng, gm = r.get("n_gaps"), float(r.get("max_gap_min") or 0)
+            count = f"{int(ng)} logging gap{'s' if int(ng) != 1 else ''}" if ng else "Logging gaps"
+            longest = f"{gm * 60:.0f} s" if gm < 1 else f"{gm:.1f} min"
+            n.append(dict(level="info", text=f"{count}, the longest {longest}; charge is not integrated across gaps."))
         if (r.get("frac_avionics_valid") or 0) < 0.05:
             n.append(dict(level="info", text="Avionics were off: no outside-air temperature, altitude or GPS for this session."))
         if r.get("b1_uniform_cells") or r.get("b2_uniform_cells"):

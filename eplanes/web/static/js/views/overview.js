@@ -158,12 +158,13 @@ function activity(el, sessions) {
   const data = [];
   let max = 1;
   weeks.forEach((w, i) => acs.forEach((a, j) => { const c = counts.get(`${w}|${a}`) || 0; if (c) { data.push([i, j, c]); max = Math.max(max, c); } }));
+  const narrow = el.clientWidth > 0 && el.clientWidth < 560;
   make(el, (t) => ({
     grid: { left: 96, right: 16, top: 8, bottom: 52 },
     tooltip: tooltip(t, { formatter: (p) => `<b>${acs[p.value[1]]}</b><br>Week of ${fmt.date(weeks[p.value[0]])}<br>${p.value[2]} session${p.value[2] > 1 ? "s" : ""}` }),
-    xAxis: { type: "category", data: weeks.map((w) => fmt.dateIso(w)), ...axis(t, { splitLine: { show: false }, axisLabel: { color: t.ink3, formatter: (v) => v.slice(0, 7), interval: Math.max(1, Math.floor(weeks.length / 9)) } }) },
+    xAxis: { type: "category", data: weeks.map((w) => fmt.dateIso(w)), ...axis(t, { splitLine: { show: false }, axisLabel: { color: t.ink3, formatter: (v) => v.slice(0, 7), interval: Math.max(1, Math.floor(weeks.length / (narrow ? 4 : 9))) } }) },
     yAxis: { type: "category", data: acs, ...axis(t, { splitLine: { show: false }, axisLabel: { color: t.ink2 } }) },
-    visualMap: { min: 1, max, calculable: false, orient: "horizontal", left: 96, bottom: 0, itemHeight: 140, itemWidth: 10,
+    visualMap: { min: 1, max, calculable: false, orient: "horizontal", left: narrow ? 8 : 96, bottom: 0, itemHeight: narrow ? 110 : 140, itemWidth: 10,
                  text: [`${max} per week`, "1"], textStyle: { color: t.ink3, fontSize: 12 }, inRange: { color: [t.seq[1], t.seq[3], t.seq[5]] } },
     series: [{ type: "heatmap", data, itemStyle: { borderColor: t.panel, borderWidth: 1, borderRadius: 2 }, emphasis: { itemStyle: { borderColor: t.accent, borderWidth: 1 } } }],
   }));

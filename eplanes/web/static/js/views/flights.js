@@ -202,14 +202,16 @@ export function telemetry(el, series, { title = true, height = 150 } = {}) {
   const missing = PANELS.flatMap((p) => p.cols.filter(([c]) => !series.columns[c]).map(([, l]) => `${p.title.toLowerCase()} (${l.toLowerCase()})`));
   el.style.height = `${present.length * height + 60}px`;
   const x = series.t_s.map((s) => s / 60);
-  const grids = present.map((p, i) => ({ left: 62, right: 18, top: 28 + i * height, height: height - 46 }));
+  // phones: title and legend on separate lines so they cannot collide
+  const narrow = el.clientWidth > 0 && el.clientWidth < 560, lh = narrow ? 18 : 0, tl = narrow ? 8 : 62;
+  const grids = present.map((p, i) => ({ left: 62, right: 18, top: 28 + lh + i * height, height: height - 46 - lh }));
   make(el, () => ({
     axisPointer: { link: [{ xAxisIndex: "all" }], lineStyle: { color: t.accent } },
     tooltip: tooltip(t, { trigger: "axis", axisPointer: { type: "line" }, formatter: (ps) => `<b>${fmt.num(ps[0].axisValue, 1)} min</b><br>` + ps.filter((p) => p.value[1] !== null).map((p) => `${p.marker}${p.seriesName}: ${fmt.num(p.value[1], 1)}`).join("<br>") }),
     dataZoom: [{ type: "inside", xAxisIndex: present.map((_, i) => i) }, { type: "slider", xAxisIndex: present.map((_, i) => i), bottom: 4, height: 18, borderColor: t.line, textStyle: { color: t.ink3 }, fillerColor: "rgba(70,200,232,0.12)", handleStyle: { color: t.accent } }],
     grid: grids,
-    title: present.map((p, i) => ({ text: `${p.title} (${p.unit})`, left: 62, top: 6 + i * height, textStyle: { color: t.ink2, fontSize: 13, fontWeight: 600, fontFamily: t.display } })),
-    legend: present.map((p, i) => ({ top: 6 + i * height, right: 18, itemWidth: 14, itemHeight: 6, textStyle: { color: t.ink3, fontSize: 11 }, data: p.cols.map(([c, l]) => `${l}·${i}`), formatter: (n) => n.split("·")[0] })),
+    title: present.map((p, i) => ({ text: `${p.title} (${p.unit})`, left: tl, top: 6 + i * height, textStyle: { color: t.ink2, fontSize: 13, fontWeight: 600, fontFamily: t.display } })),
+    legend: present.map((p, i) => ({ top: 6 + lh + i * height, ...(narrow ? { left: tl } : { right: 18 }), itemWidth: 14, itemHeight: 6, textStyle: { color: t.ink3, fontSize: 11 }, data: p.cols.map(([c, l]) => `${l}·${i}`), formatter: (n) => (narrow ? n.split("·")[0].replace("Pack ", "P") : n.split("·")[0]) })),
     xAxis: present.map((_, i) => ({ type: "value", gridIndex: i, min: 0, max: Math.ceil(x[x.length - 1]), ...axis(t, { splitLine: { show: false }, axisLabel: { color: t.ink3, show: i === present.length - 1, showMaxLabel: false, formatter: (v) => `${Math.round(v)} min` } }) })),
     yAxis: present.map((p, i) => (p.unit === "%" ? { type: "value", gridIndex: i, max: 100, min: p.title.startsWith("State of charge") ? 0 : (v) => Math.max(0, Math.floor((v.min - 5) / 10) * 10), ...axis(t, { splitNumber: 3 }) }
       : { type: "value", gridIndex: i, scale: true, ...axis(t, { splitNumber: 3 }) })),

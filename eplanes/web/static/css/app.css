@@ -320,6 +320,8 @@ table.data td.wrap { white-space: normal; min-width: 260px; }
   .topbar-inner { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; }
   .status { justify-self: end; }
   .nav { grid-column: 1 / -1; order: 3; width: 100%; }
+  /* the tab row scrolls sideways on phones; fade the edge so the hidden tabs are discoverable */
+  .nav { -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
   .banner { font-size: 13px; }
   .wordmark span { display: none; }
   .field input[type="search"] { width: 120px; }

@@ -66,7 +66,8 @@ export async function refresh({ portal = false } = {}) {
   memo.clear();
   if (MODE === "static") {
     const st = await fetchJson("status", { fresh: true });
-    return { refresh: { ok: true, at: new Date().toISOString(), message: "Re-fetched the published snapshot." }, ...st };
+    const built = st.published_at ? new Date(st.published_at).toUTCString().slice(5, 16) : "an earlier date";
+    return { ...st, refresh: { ok: true, at: new Date().toISOString(), message: `Re-fetched the published snapshot from ${built}. This copy of the site changes only when a new snapshot is published.` } };
   }
   return fetchJson(`refresh?portal=${portal ? "true" : "false"}`, { method: "POST", fresh: true });
 }

@@ -38,7 +38,7 @@ export function createMap(el, { interactive = true, center = [-80.38, 43.46], zo
     if (fellBack || map.isStyleLoaded()) return;
     fellBack = true;
     map.setStyle(plainStyle());
-    el.append(h("div", { class: "note", style: { position: "absolute", left: "10px", bottom: "6px", zIndex: 3 } }, "Basemap unavailable: showing tracks without the map background."));
+    el.append(h("div", { class: "note", style: { position: "absolute", left: "10px", right: "52px", bottom: "6px", zIndex: 3, background: "var(--panel)", padding: "4px 8px", borderRadius: "6px" } }, "Basemap unavailable: showing tracks without the map background."));
   };
   map.on("error", (e) => { if (!map.isStyleLoaded()) fallBack(); });
   setTimeout(fallBack, 15000);
