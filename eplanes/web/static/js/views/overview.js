@@ -38,7 +38,8 @@ export async function renderOverview(app) {
       baseSwitch),
     h("div", { class: "instruments" },
       readout(fmt.int(sessions.length), "Sessions recorded"),
-      readout(fmt.int(flights.length), "Flight sessions"),
+      // same definition as the paper's tables: sessions the portal labels "flight test" only
+      readout(fmt.int(sessions.filter((s) => s.session_type === "flight test").length), "Flight tests"),
       readout(fmt.int(charges.length), "Charging sessions"),
       readout(fmt.int(hours), "Hours of telemetry", "h"),
       readout(first ? `${first.getUTCFullYear()}–${last.getUTCFullYear()}` : "–", `Collection, ${fmt.int((last - first) / 864e5)} days`),
