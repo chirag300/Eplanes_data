@@ -39,7 +39,7 @@ python -m eplanes web-static --out outputs/web_static \
 - `--downloads-url` links every file on the Dataset page to where it is hosted, such as a Zenodo record. Zenodo links get `?download=1`.
 - `--copy-release` copies the release files into the site instead. Use it only for small releases: most static hosts cap single files at 25-100 MB.
 - With neither flag, the files are listed without links.
-- The snapshot is about 240 MB and about 2,900 files. Most of that is one 2 s trace file per session.
+- Expect a few hundred MB and a few thousand files; most of it is one 2 s trace file per session.
 
 Before uploading the snapshot anywhere, check that none of the values in your `.env` appear in it. The check prints file names only, never the values:
 
