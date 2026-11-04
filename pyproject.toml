@@ -14,6 +14,7 @@ dependencies = ["pandas>=2.1", "numpy>=1.26", "scipy>=1.11", "matplotlib>=3.8", 
 browser = ["selenium>=4.15"]
 web = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev = ["pytest>=8"]
+soh = ["scikit-learn>=1.4", "torch>=2.2"]
 
 [project.scripts]
 eplanes = "eplanes.cli:main"

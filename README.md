@@ -4,7 +4,9 @@ Reproducible pipeline for the paper *Interpreting State-of-Health Patterns in El
 (Pipistrel Velis Electro, four aircraft in two fleets, BMS telemetry from the Pipistrel cloud portal).
 
 **Scope:** data acquisition, dataset construction, data-quality validation, exploratory analysis, hypothesis tests, sensitivity analysis.
-No predictive modelling. Reported SOH is treated as a BMS-reported number, never as measured capacity.
+Reported SOH is treated as a BMS-reported number, never as measured capacity.
+
+The physics-based SOH label and the hybrid prediction models live in `eplanes/soh/`; see [docs/SOH_MODELLING.md](docs/SOH_MODELLING.md).
 
 > **Status honesty.** The code was developed and tested on **synthetic data** shaped like your real files (the build sandbox could not reach
 > `cloud.pipistrel.si`). The portal downloader is written from your notebooks' working logic and covered by mocked-HTML tests only,

@@ -1,0 +1,85 @@
+# Settings for the physics-label + hybrid-model pipeline (eplanes/soh). No credentials here.
+# Every threshold that matters is here so a run on real data can be tuned without touching code.
+
+extraction:
+  rule: leadzero            # cleaning rule from eplanes/analysis/features.py
+  bin_s: 1.0                # fine bins used for current steps and charge integration
+  curve_bin_s: 10.0         # coarse bins stored per session for all later stages
+  max_session_h: 12.0       # samples later than this are treated as corrupt time stamps
+  max_bridge_s: 30.0        # interpolate current across logging gaps up to this long
+  n_series: 96
+  charge_on_a: 3.0          # |I| above this (smoothed) counts as charging / discharging
+  rest_max_a: 8.0           # "rest" window: low-current ground idle; voltage is IR-corrected
+  rest_min_s: 3.0           # shortest usable rest window
+  step_min_di_a: 5.0        # charger step-down: smallest current drop that counts
+  step_from_min_a: 15.0     # ... current before the step must be at least this
+  ramp_min_di_a: 30.0       # take-off ramp: smallest current rise that counts
+  ramp_window_s: 20.0       # ... within this many seconds
+  r_min_mohm: 0.5           # plausible per-cell resistance (mV per pack A)
+  r_max_mohm: 10.0
+
+registration:
+  charge_skip_s: 180.0      # skip this long after charge onset (polarisation still building)
+  charge_i_min_a: 15.0      # high-current part of the charge only (before the charger steps down)
+  dis_i_min_a: 15.0         # steady in-flight load
+  dis_i_max_a: 60.0
+  dis_steady_s: 60.0        # load must have been steady this long
+  chg_bin_v: 0.005          # reference-curve bin (V per cell)
+  dis_bin_v: 0.020
+  min_window_ah: 4.0        # shortest usable Ah span of a session on the reference curve
+  iterations: 4
+  r2r_min_rest_min: 20.0    # rest-to-rest: minimum rest before the second voltage reading
+  r2r_max_rest_days: 21.0
+  r2r_min_ah: 5.0
+  r2r_soc_gate_pts: 3.0     # BMS SOC used ONLY to detect unlogged sessions between a pair
+  r2r_knot_v: 0.04          # spline knot spacing of the self-calibrated OCV function
+
+label:
+  fit_fleet: B              # hyperparameters and reference curves come from this fleet only
+  modalities: [chg, dis, r2r]   # capacity measurements fused into the pack label
+  primary: chg
+  settle_days: 21           # skip early break-in before setting the baseline
+  baseline_days: 120        # baseline period after settling
+  baseline_q: 0.5           # capacity baseline quantile
+  r_baseline_q: 0.25        # resistance baseline quantile (early break-in biases it upward)
+  t_ref_c: 25.0
+  tau0_days: 30.0           # regularises sqrt(age) at the first session
+  t_nu: 4.0                 # Student-t degrees of freedom for robust observation weights
+  irls_iters: 4
+  step_window: 8            # sessions on each side when testing for a real step
+  step_min_pts: 2.0         # smallest step worth modelling (points)
+  step_z: 6.0               # evidence needed to accept a step
+  max_steps_per_pack: 4
+  sigma_floor: 0.002        # noise floor on a capacity observation (fraction)
+  label_sd_floor_pts: 0.3   # smallest systematic uncertainty quoted on the label (points)
+
+validation:
+  bms_jump_pts: 4.0         # BMS jump size studied in the step test
+  bms_side_sessions: 6      # physics sessions averaged on each side of a jump
+
+data:
+  horizons_days: [30, 90, 180]
+  first_origin_days: 150    # first forecast origin; after the baseline period, so a forecast never sees a future baseline
+  origin_step_days: 45
+  min_pack_sessions: 30     # packs with fewer labelled sessions are not used in forecasting
+  train_fleet: B
+  test_fleet: A
+  cv_folds: 4
+
+runs:                       # feature ablation ladder
+  run_A: [phys, curve, history, bms]   # everything, including BMS outputs (contaminated: upper bound only)
+  run_B: [phys, curve, history]        # BMS-free with time/usage proxies
+  run_C: [phys, curve]                 # BMS-free, no time proxies
+  run_D: [phys]                        # strictest: no time proxies and no capacity-bearing features
+
+models:
+  seeds: 3
+  epochs: 300
+  patience: 60
+  lr: 0.005
+  hidden: 32
+  weight_decay: 0.0001
+  physics_weight: 1.0
+  monotone_weight: 10.0
+  cnn_epochs: 150
+  conformal_alpha: 0.1
