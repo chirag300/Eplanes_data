@@ -188,10 +188,12 @@ def robust_pass(s_grid, d, params, mods, h, tau0, nu, iters, extra_q=None):
     s = make_series(s_grid, d, params, mods)
     if extra_q is not None:
         s.extra_q = extra_q.copy()
+    g = d[d.modality.isin(mods)]
+    if g.empty:   # a pack with no reading of the label's types (e.g. flight readings only): nothing to weight
+        return s, weights
     for _ in range(iters):
         _, _, xs, _, _ = kalman(s, h, tau0)
         at = dict(zip(s_grid.flight_id, xs))
-        g = d[d.modality.isin(mods)]
         e = g.y_c.to_numpy() - g.flight_id.map(at).to_numpy()
         sig = g.modality.map(lambda m: params[m]["sigma"]).to_numpy()
         w = (nu + 1) / (nu + (e / sig) ** 2)

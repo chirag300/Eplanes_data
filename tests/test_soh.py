@@ -57,6 +57,16 @@ def test_step_detector_finds_a_real_step_and_ignores_noise():
         assert detect_steps(_series(seed=seed)[0], h, 30.0, LC) == []
 
 
+def test_pack_without_label_readings_does_not_crash():
+    """Real data: VSW1280107 has flight readings only, which are not in the label."""
+    from eplanes.soh.label import robust_pass
+    grid = pd.DataFrame(dict(flight_id=[1, 2, 3], aircraft_label="a", battery=1, t_days=[0.0, 1.0, 2.0], ah_cum=[0.0, 10.0, 20.0]))
+    d = pd.DataFrame(dict(flight_id=[1, 2], modality="dis", y_c=[1.0, 1.01]), index=[7, 8])
+    params = {"dis": dict(sigma=0.05), "chg": dict(sigma=0.02)}
+    s, w = robust_pass(grid, d, params, ["chg"], Hyper(), 30.0, 4.0, 3)
+    assert (s.lam == 0).all() and (w == 1.0).all()
+
+
 def test_charger_step_recovers_resistance_at_constant_state():
     n = 400
     i = np.r_[np.full(200, -23.0), np.full(200, -9.5)]
