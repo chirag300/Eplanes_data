@@ -46,8 +46,11 @@ v_rest = v_terminal + I * r(T)        r(T) = r25 * exp(E * (1/T - 1/298.15))
 | Name | Data | Equation |
 |---|---|---|
 | `chg` | Charge curve before the charger steps down | (1) |
-| `dis` | Steady in-flight load | (1) |
+| `dis` | Steady in-flight load | (1). Diagnostic only: on real data it rises over time, so it is contaminated by resistance growth |
 | `r2r` | Rest voltage before and after a session, with the Ah moved between them | `s = Ah / [f(v_after) - f(v_before)]` |
+
+The label combines `chg` and `r2r` (config `label.modalities`). Readings are combined as measured, with no rescaling between types;
+their disagreement goes into the uncertainty. `r2r` pairs after a charge need at least 4 hours of rest, because the voltage is still relaxing.
 
 `f` in `r2r` is not assumed. It is learned from the data by alternating between `f` and `s` (non-negative least squares).
 
@@ -64,7 +67,9 @@ y[m,k] = x[k] + beta' z[m,k] + e[m,k]
 ```
 
 The first term is calendar fade, the second cycling fade. `z` holds temperature and the voltage window of the reading.
-A Kalman filter and RTS smoother solve it, with Student-t weights so one bad session cannot pull the label.
+A Kalman filter and RTS smoother solve it, with Student-t weights so one bad session cannot pull the label. `a`, `b` and `q` are
+fitted by maximum likelihood on the weighted readings, and `q` is capped (`label.q_max_per_day`), because outliers otherwise drive it to
+its limit and the label follows noise.
 
 * **Gap-aware.** Process noise grows with time, so the state may move further across a long idle period.
 * **Fade is a prior, not a constraint.** If readings show a sustained rise the label follows and the step is listed in

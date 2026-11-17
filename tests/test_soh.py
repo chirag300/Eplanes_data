@@ -8,7 +8,7 @@ import pytest
 from eplanes.soh.capacity import OcvFunction, Reference, fit_ocv
 from eplanes.soh.common import load_ctx
 from eplanes.soh.dataset import BMS, CURVE, HISTORY, STRESS, LabelEngine, feature_list
-from eplanes.soh.label import Hyper, Series, detect_steps, kalman
+from eplanes.soh.label import Hyper, Series, detect_steps, fit_hyper, kalman
 from eplanes.soh.observables import charger_step, extract_session, takeoff_ramp
 from eplanes.soh.simulate import ocv
 
@@ -125,6 +125,24 @@ def test_ocv_self_calibration_needs_no_soc():
     ratio = raw / np.nanmedian(raw[:30])
     true = (1 - 0.15 * np.arange(300) / 300)
     assert np.nanmean(np.abs(ratio - true / true[:30].mean())) < 0.012
+
+
+def test_rest_pairs_skip_short_rest_after_a_charge():
+    from eplanes.soh.capacity import rest_pairs
+    rc = dict(r2r_min_rest_min=20.0, r2r_max_rest_days=21.0, r2r_soc_gate_pts=3.0, r2r_min_ah=5.0, r2r_min_rest_after_charge_min=240.0)
+    t0 = pd.Timestamp("2026-01-01 10:00")
+    def sess(fid, start, q_end):
+        return dict(flight_id=fid, aircraft_label="a", battery=1, usable_electrical=True, start_datetime=start, duration_min=60.0, rest_start_v=3.8,
+                    rest_start_i_a=0.0, r_eff=0.0025, rest_start_q_ah=0.0, q_end_ah=q_end, soc_first=50.0, soc_last=50.0, n_segments_q=1)
+    for q_end, gap_h, kept in ((15.0, 2, False), (15.0, 6, True), (-15.0, 2, True)):   # charge then 2 h, charge then 6 h, flight then 2 h
+        obs = pd.DataFrame([sess(1, t0, q_end), sess(2, t0 + pd.Timedelta(hours=1 + gap_h), 0.0)])
+        assert (len(rest_pairs(obs, rc)) == 1) == kept, (q_end, gap_h)
+
+
+def test_process_noise_respects_its_cap():
+    s, _ = _series(n=80)
+    s.eta[::7] += 0.08 * s.lam[::7]          # gross outliers would push an uncapped fit to a large q
+    assert fit_hyper([s], 30.0, q_max=2e-6).q <= 2e-6 * 1.0001
 
 
 def test_ocv_function_inverts():

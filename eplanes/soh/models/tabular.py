@@ -177,7 +177,7 @@ class GBMNow:
         return self.m.predict(X)
 
 
-READINGS = ["y_chg", "y_dis", "y_r2r"]
+READINGS = ["y_chg", "y_r2r"]   # the flight-load reading is biased by resistance growth on real data; it stays a feature, not a reading
 
 
 def reading_of(X, cols):

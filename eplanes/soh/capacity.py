@@ -258,6 +258,8 @@ def rest_pairs(obs: pd.DataFrame, rc: dict) -> pd.DataFrame:
             dq = a["q_end_ah"] - a["rest_start_q_ah"]
             if not np.isfinite(dq) or abs(dq) < rc["r2r_min_ah"]:
                 continue
+            if dq > 0 and rest_min < rc["r2r_min_rest_after_charge_min"]:   # voltage still relaxing after a charge (real data: spread 0.3-0.6 under 4 h)
+                continue
             va = a["rest_start_v"] + a["rest_start_i_a"] * a["r_eff"]
             vc = c["rest_start_v"] + c["rest_start_i_a"] * c["r_eff"]
             rows.append(dict(aircraft_label=ac, battery=b, flight_id=a["flight_id"], next_flight_id=c["flight_id"], start_datetime=a["start_datetime"],

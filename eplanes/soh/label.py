@@ -90,8 +90,9 @@ def kalman(s: Series, h: Hyper, tau0: float, x0: float = 1.0, p0: float = 0.04 *
     return xf, pf, xs, ps, ll
 
 
-def fit_hyper(series: list[Series], tau0: float, start: Hyper | None = None) -> Hyper:
-    """Maximum likelihood for (a, b, q) on the fit fleet."""
+def fit_hyper(series: list[Series], tau0: float, start: Hyper | None = None, q_max: float = 2e-6) -> Hyper:
+    """Maximum likelihood for (a, b, q) on the fit fleet. q is capped: left free, real-data outliers drive it to its limit and the
+    label then follows noise (first real run, Nov 2026)."""
     start = start or Hyper()
 
     def nll(p):
@@ -99,7 +100,7 @@ def fit_hyper(series: list[Series], tau0: float, start: Hyper | None = None) -> 
         return -sum(kalman(s, h, tau0, smooth=False)[4] for s in series)
 
     x0 = np.log([max(start.a, 1e-3), max(start.b, 1e-3), max(start.q, 1e-8)])
-    bounds = [(np.log(1e-5), np.log(0.3)), (np.log(1e-5), np.log(0.3)), (np.log(1e-9), np.log(2e-4))]
+    bounds = [(np.log(1e-5), np.log(0.3)), (np.log(1e-5), np.log(0.3)), (np.log(1e-9), np.log(q_max))]
     r = minimize(nll, x0, method="L-BFGS-B", bounds=bounds, options=dict(maxiter=60, eps=1e-2))
     return Hyper(float(np.exp(r.x[0])), float(np.exp(r.x[1])), float(np.exp(r.x[2])))
 
@@ -134,7 +135,7 @@ def calibrate(d: pd.DataFrame, fit_mask: pd.Series, lc: dict, log) -> tuple[pd.D
     """Remove temperature and measurement-window effects, per modality.
 
     Estimated from how each measurement departs from its neighbours in time, so slow fade and season cannot be mistaken for a
-    temperature effect. Also returns each modality's noise level and its gain against the primary modality."""
+    temperature effect. Also returns each modality's noise level."""
     d = d.copy()
     params = {}
     d["e_local"] = local_residual(d, "y")
@@ -351,35 +352,16 @@ def run_label(ctx: Ctx, log=None) -> pd.DataFrame:
     grids = build_grid(obs)
     mods = [m for m in lc["modalities"] if m in params]
     prim = lc["primary"] if lc["primary"] in params else mods[0]
-    # gain of each modality against the primary, from early smoothing of the primary alone
+    # no per-modality gain rescaling: when a reading type disagrees, rescaling amplifies it (gains hit 0.5 on real data and doubled
+    # the deviations). Reading types are combined as measured; their disagreement goes into the systematic uncertainty instead.
     fit_keys = [k for k in grids if k[0] in set(d[fit_mask].aircraft_label)]
     h = Hyper()
     tau0 = lc["tau0_days"]
-    fs = [make_series(grids[k], d[(d.aircraft_label == k[0]) & (d.battery == k[1])], params, [prim]) for k in fit_keys]
-    fs = [s for s in fs if (s.lam > 0).sum() >= 10]
-    if fs:
-        h = fit_hyper(fs, tau0)
-    lab0, _ = smooth_label(grids, d, params, [prim], h, lc)
-    gains = {}
-    dm = d.merge(lab0[["flight_id", "battery", "x_s"]], on=["flight_id", "battery"], how="left")
-    dm.index = d.index
-    for m in mods:
-        if m == prim:
-            gains[m] = 1.0
-            continue
-        g = dm[(dm.modality == m) & fit_mask & dm.x_s.notna()]
-        if len(g) < 30 or (1 - g.x_s).abs().max() < 0.02:
-            gains[m] = 1.0
-            continue
-        xx, yy = 1 - g.x_s, 1 - g.y_c
-        ok = (yy - xx).abs() < 4 * max(mad_sigma((yy - xx).to_numpy()), 1e-3)
-        gains[m] = float(np.clip(np.sum(xx[ok] * yy[ok]) / np.sum(xx[ok] ** 2), 0.5, 2.0))
-        d.loc[d.modality == m, "y_c"] = 1 - (1 - d.loc[d.modality == m, "y_c"]) / gains[m]
-    log(f"[label] gain of each modality against {prim}: {gains}")
-    fs = [make_series(grids[k], d[(d.aircraft_label == k[0]) & (d.battery == k[1])], params, mods) for k in fit_keys]
-    fs = [s for s in fs if (s.lam > 0).sum() >= 10]
-    if fs:
-        h = fit_hyper(fs, tau0, h)
+    for _ in range(2):   # weights from the current fit, then refit: single bad sessions must not inflate the process noise
+        fs = [robust_pass(grids[k], d[(d.aircraft_label == k[0]) & (d.battery == k[1])], params, mods, h, tau0, lc["t_nu"], lc["irls_iters"])[0] for k in fit_keys]
+        fs = [s for s in fs if (s.lam > 0).sum() >= 10]
+        if fs:
+            h = fit_hyper(fs, tau0, h, lc["q_max_per_day"])
     log(f"[label] fitted on fleet {lc['fit_fleet']}: calendar a={h.a:.4f}/sqrt(yr), cycling b={h.b:.4f}/1000 Ah, process q={h.q:.2e}/day")
     lab, steps = smooth_label(grids, d, params, mods, h, lc, find_steps=True)
     lab["x_iso"] = isotonic_view(lab, steps)
@@ -387,7 +369,7 @@ def run_label(ctx: Ctx, log=None) -> pd.DataFrame:
     for s in steps:
         step_map.setdefault((s["aircraft_label"], s["battery"]), []).append(s)
     views = {}
-    for m in sorted(set(mods) | ({"chg_vmax"} & set(params))):
+    for m in sorted(params):
         v, _ = smooth_label(grids, d, params, [m], h, lc, steps=step_map)
         if len(v):
             views[m] = v.rename(columns={"x_s": f"x_{m}", "x_f": f"xf_{m}", "sd_s": f"sd_{m}"})[["flight_id", "battery", f"x_{m}", f"xf_{m}", f"sd_{m}"]]
@@ -413,7 +395,7 @@ def run_label(ctx: Ctx, log=None) -> pd.DataFrame:
     lab.to_csv(ctx.tables / "L1_physics_soh_label.csv", index=False)
     pd.DataFrame(steps).to_csv(ctx.tables / "L2_detected_steps.csv", index=False)
     d.to_parquet(ctx.cache / "observations_calibrated.parquet", index=False)
-    write_json(ctx.cache / "label_hyper.json", dict(a=h.a, b=h.b, q=h.q, params=params, gains=gains, mods=mods, primary=prim, fit_fleet=lc["fit_fleet"], resistance=st["rparams"]))
+    write_json(ctx.cache / "label_hyper.json", dict(a=h.a, b=h.b, q=h.q, params=params, mods=mods, primary=prim, fit_fleet=lc["fit_fleet"], resistance=st["rparams"]))
     if steps:
         log("[label] steps accepted (check against maintenance records):\n" + pd.DataFrame(steps).drop(columns=["k", "delta"]).round({"delta_pts": 2, "z": 1}).to_string(index=False))
     else:

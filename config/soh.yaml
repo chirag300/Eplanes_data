@@ -29,6 +29,7 @@ registration:
   min_window_ah: 4.0        # shortest usable Ah span of a session on the reference curve
   iterations: 4
   r2r_min_rest_min: 20.0    # rest-to-rest: minimum rest before the second voltage reading
+  r2r_min_rest_after_charge_min: 240.0   # after a charge the voltage relaxes for hours
   r2r_max_rest_days: 21.0
   r2r_min_ah: 5.0
   r2r_soc_gate_pts: 3.0     # BMS SOC used ONLY to detect unlogged sessions between a pair
@@ -36,7 +37,7 @@ registration:
 
 label:
   fit_fleet: B              # hyperparameters and reference curves come from this fleet only
-  modalities: [chg, dis, r2r]   # capacity measurements fused into the pack label
+  modalities: [chg, r2r]   # capacity measurements fused into the label; dis is kept as a diagnostic (rises with resistance on real data)
   primary: chg
   settle_days: 21           # skip early break-in before setting the baseline
   baseline_days: 120        # baseline period after settling
@@ -44,6 +45,7 @@ label:
   r_baseline_q: 0.25        # resistance baseline quantile (early break-in biases it upward)
   t_ref_c: 25.0
   tau0_days: 30.0           # regularises sqrt(age) at the first session
+  q_max_per_day: 2.0e-6     # cap on process noise: about 2.7 % random wander per sqrt(year)
   t_nu: 4.0                 # Student-t degrees of freedom for robust observation weights
   irls_iters: 4
   step_window: 8            # sessions on each side when testing for a real step
